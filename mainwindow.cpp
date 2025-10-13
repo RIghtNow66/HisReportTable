@@ -278,34 +278,6 @@ QString MainWindow::adjustFormulaReferences(const QString& formula, int rowOffse
 }
 
 
-void MainWindow::updateTableSpans()
-{
-    const auto& allCells = m_dataModel->getAllCells();
-
-    // 清除现有的span设置
-    // QTableView没有直接的clearAllSpans方法，需要重置
-
-    // 设置新的span
-    for (auto it = allCells.constBegin(); it != allCells.constEnd(); ++it) {
-        const QPoint& pos = it.key();
-        const CellData* cell = it.value();
-
-        if (cell && cell->mergedRange.isValid() && cell->mergedRange.isMerged()) {
-            // 只为主单元格设置span
-            if (pos.x() == cell->mergedRange.startRow &&
-                pos.y() == cell->mergedRange.startCol) {
-
-                int rowSpan = cell->mergedRange.rowSpan();
-                int colSpan = cell->mergedRange.colSpan();
-
-                if (rowSpan > 1 || colSpan > 1) {
-                    m_tableView->setSpan(pos.x(), pos.y(), rowSpan, colSpan);
-                }
-            }
-        }
-    }
-}
-
 void MainWindow::onImportExcel()
 {
     QString fileName = QFileDialog::getOpenFileName(this,
@@ -313,47 +285,27 @@ void MainWindow::onImportExcel()
 
     if (fileName.isEmpty()) return;
 
-    QFileInfo fileInfo(fileName);
-    QString baseFileName = fileInfo.fileName();
+    m_tableView->clearSpans();
 
-    // ===== 新增：文件类型判断 =====
-    if (baseFileName.startsWith("##Day_", Qt::CaseInsensitive)) {
-        // ========== 日报模式 ==========
-        qDebug() << "检测到日报文件:" << baseFileName;
+    // =====【已修正】使用统一的加载接口 =====
+    if (m_dataModel->loadReportTemplate(fileName)) {
+        applyRowColumnSizes();
+        m_tableView->updateSpans();
 
-        m_tableView->clearSpans();
+        QFileInfo fileInfo(fileName);
+        setWindowTitle(QString("SCADA报表控件 - [%1]").arg(fileInfo.fileName()));
 
-        if (m_dataModel->loadDayReport(fileName)) {
-            applyRowColumnSizes();
-            setWindowTitle(QString("SCADA报表控件 - [%1]").arg(baseFileName));
-
+        // 根据加载后的类型决定提示信息
+        if (m_dataModel->getReportType() == ReportDataModel::DAY_REPORT) {
             QMessageBox::information(this, "日报已加载",
-                QString("日报配置已加载：%1\n\n"
-                    "当前显示的是配置模板（包含 #Date、#t#、#d# 标记）。\n\n"
-                    "请点击工具栏的 [刷新数据] 按钮执行查询并填充数据。")
-                .arg(baseFileName));
+                "日报模板已加载，请点击 [刷新数据] 按钮填充数据。");
         }
         else {
-            QMessageBox::warning(this, "错误", "日报文件加载失败！\n\n请检查：\n"
-                "1. 文件是否损坏\n"
-                "2. 是否包含 #Date 标记\n"
-                "3. 是否包含 #d# 数据标记");
+            QMessageBox::information(this, "成功", "文件导入成功！");
         }
     }
     else {
-        // ========== 普通Excel模式（保留原逻辑）==========
-        m_tableView->clearSpans();
-
-        if (m_dataModel->loadFromExcel(fileName)) {
-            updateTableSpans();
-            applyRowColumnSizes();
-            QMessageBox::information(this, "成功", "文件导入成功！");
-        }
-        else {
-            QMessageBox::warning(this, "错误", "文件导入失败！");
-        }
-
-        setWindowTitle("SCADA报表控件 v1.0");
+        QMessageBox::warning(this, "错误", "文件加载或解析失败！\n\n请检查文件格式或模板标记是否正确。");
     }
 }
 
@@ -363,9 +315,6 @@ void MainWindow::onExportExcel()
         "导出Excel文件", "", "Excel文件 (*.xlsx)");
 
     if (fileName.isEmpty()) return;
-
-    // 日报和普通Excel都使用相同的导出逻辑
-    // 日报导出时会包含查询后的实际数值
 
     if (m_dataModel->saveToExcel(fileName)) {
         QMessageBox::information(this, "成功", "文件导出成功！");
@@ -685,91 +634,60 @@ void MainWindow::applyRowColumnSizes()
 
 void MainWindow::onRefreshData()
 {
-    if (m_dataModel->isDayReport()) {
-        // ========== 日报模式：执行查询 ==========
+    // =====【已修正】使用新的类型检查和统一的刷新接口 =====
+    ReportDataModel::ReportType type = m_dataModel->getReportType();
 
+    if (type == ReportDataModel::DAY_REPORT) {
+        // ========== 日报模式：执行查询 ==========
         DayReportParser* parser = m_dataModel->getDayParser();
         if (!parser || !parser->isValid()) {
-            QMessageBox::warning(this, "错误", "日报解析器未初始化或无效！");
+            QMessageBox::warning(this, "错误", "日报解析器未初始化或模板无效！");
             return;
         }
 
         int queryCount = parser->getPendingQueryCount();
-
-        // 确认对话框
-        auto reply = QMessageBox::question(this, "确认查询",
-            QString("即将查询 %1 个数据点，是否继续？\n\n"
-                "基准日期: %2\n"
-                "说明: 查询可能需要一些时间，请耐心等待。")
-            .arg(queryCount)
-            .arg(parser->getBaseDate()),
-            QMessageBox::Yes | QMessageBox::No,
-            QMessageBox::Yes);
-
-        if (reply == QMessageBox::No) {
+        if (queryCount == 0) {
+            QMessageBox::information(this, "提示", "模板中没有找到需要查询的数据标记 (#d#)。");
             return;
         }
 
-        // 显示进度条
+        auto reply = QMessageBox::question(this, "确认查询",
+            QString("即将查询 %1 个数据点，是否继续？\n\n基准日期: %2")
+            .arg(queryCount)
+            .arg(parser->getBaseDate()),
+            QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes);
+
+        if (reply == QMessageBox::No) return;
+
         QProgressDialog progress("正在查询数据...", "取消", 0, queryCount, this);
         progress.setWindowModality(Qt::WindowModal);
         progress.setMinimumDuration(0);
-        progress.show();
 
-        // 连接进度信号
-        connect(parser, &DayReportParser::queryProgress,
-            &progress, [&](int current, int total) {
-                progress.setValue(current);
-                progress.setLabelText(QString("正在查询: %1/%2").arg(current).arg(total));
-                qApp->processEvents();
-
-                if (progress.wasCanceled()) {
-                    // TODO: 实现取消功能
-                }
-            });
-
-        // 连接完成信号
-        connect(parser, &DayReportParser::queryCompleted,
-            &progress, [&](int successCount, int failCount) {
+        connect(parser, &DayReportParser::queryProgress, &progress, &QProgressDialog::setValue);
+        connect(parser, &DayReportParser::queryCompleted, this,
+            [=, &progress](int successCount, int failCount) {
                 progress.setValue(queryCount);
-
-                QString message;
                 if (failCount == 0) {
-                    message = QString("查询完成！\n\n"
-                        "成功: %1 个\n"
-                        "失败: %2 个")
-                        .arg(successCount).arg(failCount);
-                    QMessageBox::information(this, "完成", message);
+                    QMessageBox::information(this, "完成", QString("查询完成！\n成功: %1 个").arg(successCount));
                 }
                 else {
-                    message = QString("查询完成，但有部分失败。\n\n"
-                        "成功: %1 个\n"
-                        "失败: %2 个\n\n"
-                        "失败的单元格显示为红色背景（ERROR）。\n"
-                        "请检查网络连接或RTU号是否正确。")
-                        .arg(successCount).arg(failCount);
-                    QMessageBox::warning(this, "部分失败", message);
+                    QMessageBox::warning(this, "部分失败", QString("查询完成，但有部分失败。\n\n成功: %1 个\n失败: %2 个\n\n失败的单元格已用红色背景标出。").arg(successCount).arg(failCount));
                 }
             });
 
-        // 执行查询
-        bool success = m_dataModel->refreshDayReportData();
+        progress.show();
+        // 调用统一的刷新函数
+        m_dataModel->refreshReportData();
 
-        if (!success) {
-            QMessageBox::warning(this, "失败", "查询过程中发生错误！");
-        }
     }
     else {
-        // ========== 普通模式：数据绑定刷新（保留原逻辑）==========
-
+        // ========== 普通/实时模式：数据绑定刷新 ==========
         if (!m_dataModel->hasDataBindings()) {
-            QMessageBox::information(this, "提示",
-                "当前表格中没有数据绑定（##标记的单元格）。\n\n"
-                "如需使用数据绑定功能，请在单元格中输入 ##RTU号 格式。");
+            QMessageBox::information(this, "提示", "当前表格中没有实时数据绑定（##标记的单元格）。");
             return;
         }
-
-        m_dataModel->resolveDataBindings();
+        // 调用统一的刷新函数
+        m_dataModel->refreshReportData();
         QMessageBox::information(this, "完成", "实时数据已更新！");
     }
 }

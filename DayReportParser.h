@@ -11,12 +11,6 @@ class ReportDataModel;
 class TaosDataFetcher;
 struct CellData;
 
-/**
- * @brief ÈÕ±¨½âÎöÆ÷
- *
- * ¸ºÔğ½âÎö ##Day_xxx.xlsx ¸ñÊ½µÄÈÕ±¨ÎÄ¼ş
- * Ê¶±ğ #Date¡¢#t#¡¢#d# ±ê¼Ç£¬¹¹½¨²éÑ¯µØÖ·²¢Ö´ĞĞ²éÑ¯
- */
 class DayReportParser : public QObject
 {
     Q_OBJECT
@@ -25,102 +19,58 @@ public:
     explicit DayReportParser(ReportDataModel* model, QObject* parent = nullptr);
     ~DayReportParser();
 
-    // ===== ºËĞÄ½Ó¿Ú =====
-
-    /**
-     * @brief É¨Ãè²¢½âÎöËùÓĞµ¥Ôª¸ñ±ê¼Ç
-     * @return ÊÇ·ñ³É¹¦£¨ÖÁÉÙÕÒµ½#DateÇÒÓĞ´ı²éÑ¯µ¥Ôª¸ñ£©
-     */
+    // ===== æ ¸å¿ƒæ¥å£ =====
     bool scanAndParse();
-
-    /**
-     * @brief Ö´ĞĞËùÓĞ²éÑ¯ÈÎÎñ
-     * @return ÊÇ·ñÈ«²¿³É¹¦
-     */
     bool executeQueries();
 
-    // ===== ×´Ì¬²éÑ¯ =====
-
+    // ===== çŠ¶æ€æŸ¥è¯¢ =====
     bool isValid() const { return m_dateFound; }
     QString getBaseDate() const { return m_baseDate; }
     int getPendingQueryCount() const { return m_queryTasks.size(); }
 
 signals:
-    void parseProgress(int current, int total);      // ½âÎö½ø¶È
-    void queryProgress(int current, int total);      // ²éÑ¯½ø¶È
+    void parseProgress(int current, int total);
+    void queryProgress(int current, int total);
     void parseCompleted(bool success, QString message);
     void queryCompleted(int successCount, int failCount);
 
 private:
-    // ===== µÚÒ»½×¶Î£º±ê¼Ç½âÎö =====
-
-    /**
-     * @brief ²éÕÒ²¢½âÎö #Date ±ê¼Ç
-     * @return ÊÇ·ñÕÒµ½ÓĞĞ§µÄ#Date
-     */
+    // ===== å†…éƒ¨å¤„ç†å‡½æ•° =====
     bool findDateMarker();
-
-    /**
-     * @brief ½âÎöÒ»ĞĞÖĞµÄËùÓĞ±ê¼Ç
-     * @param row ĞĞºÅ
-     */
     void parseRow(int row);
-
-    // ===== µÚ¶ş½×¶Î£º²éÑ¯Ö´ĞĞ =====
-
-    /**
-     * @brief Ö´ĞĞµ¥¸ö²éÑ¯ÈÎÎñ
-     * @param queryPath ²éÑ¯µØÖ·
-     * @return ²éÑ¯½á¹û£¨µ¥Öµ£©
-     */
     QVariant querySinglePoint(const QString& queryPath);
 
-    // ===== ¹¤¾ßº¯Êı =====
-
+    // ===== å·¥å…·å‡½æ•° =====
     bool isDateMarker(const QString& text) const;
     bool isTimeMarker(const QString& text) const;
     bool isDataMarker(const QString& text) const;
 
-    QString extractDate(const QString& text);        // ´Ó "#Date:2024-01-01" ÌáÈ¡
-    QString extractTime(const QString& text);        // ´Ó "#t#0:00" ÌáÈ¡²¢¸ñÊ½»¯
-    QString extractRtuId(const QString& text);       // ´Ó "#d#AIRTU..." ÌáÈ¡
+    QString extractDate(const QString& text);
+    QString extractTime(const QString& text);
+    QString extractRtuId(const QString& text);
 
-    /**
-     * @brief ¹¹Ôì²éÑ¯µØÖ·
-     * @param rtuId RTUºÅ
-     * @param baseTime ÆğÊ¼Ê±¼ä
-     * @return ²éÑ¯µØÖ·×Ö·û´®
-     */
     QString buildQueryPath(const QString& rtuId, const QDateTime& baseTime);
-
-    /**
-     * @brief Æ´½ÓÈÕÆÚºÍÊ±¼ä
-     * @param date "2024-01-01"
-     * @param time "00:00:00"
-     * @return QDateTime¶ÔÏó
-     */
     QDateTime constructDateTime(const QString& date, const QString& time);
 
 private:
-    // ===== Êı¾İ³ÉÔ± =====
+    // ===== æ•°æ®æˆå‘˜ =====
+    ReportDataModel* m_model;
+    TaosDataFetcher* m_fetcher;
 
-    ReportDataModel* m_model;              // Êı¾İÄ£ĞÍÖ¸Õë
-    TaosDataFetcher* m_fetcher;            // Êı¾İ²éÑ¯Æ÷
+    // è§£æçŠ¶æ€
+    QString m_baseDate;
+    QString m_currentTime;
+    bool m_dateFound;
 
-    // ½âÎö×´Ì¬
-    QString m_baseDate;                    // »ù×¼ÈÕÆÚ£¨´Ó #Date ÌáÈ¡£¬Èç "2024-01-01"£©
-    QString m_currentTime;                 // µ±Ç°ÓĞĞ§Ê±¼ä£¨´Ó×î½üµÄ #t# ÌáÈ¡£¬Èç "00:00:00"£©
-    bool m_dateFound;                      // ÊÇ·ñÕÒµ½ #Date ±ê¼Ç
-
-    // ²éÑ¯ÈÎÎñ
+    // æŸ¥è¯¢ä»»åŠ¡ç»“æ„ä½“
     struct QueryTask {
-        CellData* cell;                    // µ¥Ôª¸ñÖ¸Õë
-        int row;                           // ĞĞºÅ
-        int col;                           // ÁĞºÅ
-        QString queryPath;                 // ²éÑ¯µØÖ·
+        CellData* cell;
+        int row;
+        int col;
+        QString queryPath;
     };
 
-    QList<QueryTask> m_queryTasks;         // ´ıÖ´ĞĞµÄ²éÑ¯ÈÎÎñÁĞ±í
+    QList<QueryTask> m_queryTasks;
 };
 
 #endif // DAYREPORTPARSER_H

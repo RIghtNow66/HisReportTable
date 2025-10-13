@@ -38,15 +38,15 @@ bool ExcelHandler::loadFromFile(const QString& fileName, ReportDataModel* model)
 
     QXlsx::Document xlsx(fileName);
     if (!xlsx.load()) {
-        QMessageBox::warning(nullptr, "错误", "无法打开Excel文件，文件可能已损坏或格式不支持");
+        QMessageBox::warning(nullptr, "错误", "无法打开Excel文件");
         return false;
     }
-    progress->setValue(20);
+    progress->setValue(10);
     qApp->processEvents();
 
     QXlsx::Worksheet* worksheet = static_cast<QXlsx::Worksheet*>(xlsx.currentSheet());
     if (!worksheet) {
-        QMessageBox::warning(nullptr, "错误", "无法读取工作表内容");
+        QMessageBox::warning(nullptr, "错误", "无法读取工作表");
         return false;
     }
 
@@ -59,123 +59,83 @@ bool ExcelHandler::loadFromFile(const QString& fileName, ReportDataModel* model)
     }
 
     int totalRows = range.rowCount();
-    int maxModelRow = 0, maxModelCol = 0;
+    model->updateModelSize(range.rowCount(), range.columnCount());
+    progress->setValue(20);
 
-    // 首先处理合并单元格信息
+    // 1. 先加载所有合并单元格信息
     QHash<QPoint, RTMergedRange> mergedRanges;
     loadMergedCells(worksheet, mergedRanges);
     progress->setValue(30);
-    qApp->processEvents();
 
-    // 处理单元格数据
+    // 2. 【全新逻辑】遍历有效区域内的每一个格子，确保不遗漏
     for (int row = range.firstRow(); row <= range.lastRow(); ++row) {
         if (progress->wasCanceled()) break;
         for (int col = range.firstColumn(); col <= range.lastColumn(); ++col) {
 
+            int modelRow = row - 1, modelCol = col - 1;
+            CellData* newCell = new CellData(); // 始终创建一个新的CellData
+
+            // 尝试获取QXlsx的单元格对象
             auto xlsxCell = worksheet->cellAt(row, col);
 
             if (xlsxCell) {
-                CellData* newCell = new CellData();
-
-                // 读取公式和值
-                QVariant rawData = worksheet->read(row, col);
-                QString rawString;
-                if (rawData.type() == QVariant::String)
-                {
-					rawString = rawData.toString();
+                // 如果单元格存在（有内容或独立的格式），则读取其数据和格式
+                QVariant rawValue = xlsxCell->value();
+                if (rawValue.type() == QVariant::String) {
+                    QString rawString = rawValue.toString();
+                    if (rawString.startsWith('=')) {
+                        newCell->setFormula(rawString);
+                    }
+                    else if (rawString.startsWith("##") || rawString.startsWith("#")) {
+                        newCell->originalMarker = rawString;
+                        newCell->value = rawString; // 初始显示标记
+                    }
+                    else {
+                        newCell->value = rawValue;
+                    }
+                }
+                else {
+                    newCell->value = rawValue;
                 }
 
-                if (!rawString.isEmpty() && rawString.startsWith("##")) {
-                    newCell->isDataBinding = true;
-                    newCell->bindingKey=rawString;
-                    newCell->value = "0.0"; // 设置加载中的临时占位符
-                    newCell->hasFormula = false; // 清除公式标记
-                }
-                else if (rawData.type() == QVariant::String && rawData.toString().startsWith('=')) {
-                    newCell->setFormula(rawString);
-					newCell->isDataBinding = false;
-                }
-                else
-                {
-                    newCell->value = xlsxCell->value(); // 使用 cell->value() 获取最合适类型的数据
-                    newCell->isDataBinding = false;
-                    newCell->hasFormula = false;
-                }
-
-                // 转换格式
+                // 应用单元格特有的格式
                 if (xlsxCell->format().isValid()) {
                     convertFromExcelStyle(xlsxCell->format(), newCell->style);
                 }
 
-                // 设置合并单元格信息
-                QPoint cellPos(row - 1, col - 1);  // 转换为0基索引
-                if (mergedRanges.contains(cellPos)) {
-                    newCell->mergedRange = mergedRanges[cellPos];
-                }
-
-                int modelRow = row - 1, modelCol = col - 1;
-                model->addCellDirect(modelRow, modelCol, newCell);
-                maxModelRow = qMax(maxModelRow, modelRow + 1);
-                maxModelCol = qMax(maxModelCol, modelCol + 1);
             }
+            else {
+                // 如果单元格为空（xlsxCell是nullptr），它依然可能应用了行或列的格式
+                // 我们创建一个空的CellData，后续的样式统一逻辑会处理它
+            }
+
+            // 为模型添加这个（可能为空的）单元格
+            model->addCellDirect(modelRow, modelCol, newCell);
         }
         int progressValue = 30 + ((row - range.firstRow() + 1) * 60 / totalRows);
         progress->setValue(progressValue);
         qApp->processEvents();
     }
-
     if (progress->wasCanceled()) {
         model->clearAllCells();
-        model->updateModelSize(0, 0);
         return false;
     }
 
-    model->updateModelSize(maxModelRow, maxModelCol);
-
-    // 处理合并单元格的样式统一 - 只处理每个合并区域一次
-    QSet<QPair<QPair<int, int>, QPair<int, int>>> processedMergedRanges;
-
-    for (auto it = mergedRanges.constBegin(); it != mergedRanges.constEnd(); ++it) {
-        const RTMergedRange& mergedRange = it.value();
-
-        // 创建合并范围的唯一标识符
-        QPair<QPair<int, int>, QPair<int, int>> rangeKey = {
-            {mergedRange.startRow, mergedRange.startCol},
-            {mergedRange.endRow, mergedRange.endCol}
-        };
-
-        // 如果这个合并区域已经处理过，跳过
-        if (processedMergedRanges.contains(rangeKey)) {
-            continue;
-        }
-
-        processedMergedRanges.insert(rangeKey);
-
-        // 获取主单元格（左上角）
+    // 3. 【后处理】统一合并区域的样式
+    // 这个逻辑很重要，它会为合并区域中的空单元格填充上主单元格的样式（包括边框）
+    for (const auto& mergedRange : mergedRanges) {
         CellData* mainCell = model->getCell(mergedRange.startRow, mergedRange.startCol);
-        if (!mainCell) {
-            // 如果主单元格不存在，创建一个
-            mainCell = model->ensureCell(mergedRange.startRow, mergedRange.startCol);
-            mainCell->mergedRange = mergedRange;
-        }
+        if (!mainCell) continue;
 
-        // 将主单元格的样式复制到合并区域内的所有单元格
-        for (int row = mergedRange.startRow; row <= mergedRange.endRow; ++row) {
-            for (int col = mergedRange.startCol; col <= mergedRange.endCol; ++col) {
-                CellData* cell = model->ensureCell(row, col);
-                if (cell) {
-                    // 设置合并信息
-                    cell->mergedRange = mergedRange;
-
-                    // 如果不是主单元格，清空内容但保持样式
-                    if (row != mergedRange.startRow || col != mergedRange.startCol) {
-                        cell->value = QVariant();
-                        cell->formula.clear();
-                        cell->hasFormula = false;
+        for (int r = mergedRange.startRow; r <= mergedRange.endRow; ++r) {
+            for (int c = mergedRange.startCol; c <= mergedRange.endCol; ++c) {
+                CellData* childCell = model->getCell(r, c);
+                if (childCell) {
+                    childCell->mergedRange = mergedRange;
+                    childCell->style = mainCell->style; // 将主单元格样式（含边框）同步给所有子单元格
+                    if (r != mergedRange.startRow || c != mergedRange.startCol) {
+                        childCell->value = QVariant(); // 清空子单元格的内容
                     }
-
-                    // 应用主单元格的样式到所有单元格
-                    cell->style = mainCell->style;
                 }
             }
         }

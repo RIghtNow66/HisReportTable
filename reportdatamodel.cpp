@@ -2,6 +2,7 @@
 #include "formulaengine.h"
 #include "excelhandler.h" // 用于文件操作
 #include "UniversalQueryEngine.h"
+#include "DayReportParser.h"
 // QXlsx相关（检查是否已包含）
 #include "xlsxdocument.h"      // 用于 QXlsx::Document
 #include "xlsxcellrange.h"     // 用于 QXlsx::CellRange
@@ -26,17 +27,96 @@
 
 ReportDataModel::ReportDataModel(QObject* parent)
     : QAbstractTableModel(parent)
-    , m_currentMode(REALTIME_MODE)
     , m_maxRow(100) // 默认初始行数
     , m_maxCol(26)  // 默认初始列数 (A-Z)
     , m_formulaEngine(new FormulaEngine(this))
+    , m_reportType(NORMAL_EXCEL) // 默认是普通Excel
+    , m_dayParser(nullptr)
 {
 }
 
 ReportDataModel::~ReportDataModel()
 {
-    qDeleteAll(m_cells);
+    clearAllCells();
 }
+
+// ===== 新增：统一的模板加载入口 =====
+bool ReportDataModel::loadReportTemplate(const QString& fileName)
+{
+    // 1. 清理旧状态
+    clearAllCells();
+
+    // 2. 加载基础Excel数据
+    if (!loadFromExcelFile(fileName)) {
+        return false;
+    }
+
+    // 3. 根据文件名判断报表类型
+    QFileInfo fileInfo(fileName);
+    QString baseName = fileInfo.fileName();
+    m_reportName = fileInfo.baseName();
+
+    if (baseName.startsWith("##Day_", Qt::CaseInsensitive)) {
+        m_reportType = DAY_REPORT;
+        qDebug() << "检测到日报模板，开始解析...";
+        m_dayParser = new DayReportParser(this, this);
+        if (!m_dayParser->scanAndParse()) {
+            // 解析失败，重置状态
+            clearAllCells();
+            return false;
+        }
+    }
+    else if (baseName.startsWith("##Month_", Qt::CaseInsensitive)) {
+        m_reportType = MONTH_REPORT;
+        qDebug() << "检测到月报模板 (功能待实现)...";
+        // 此处未来可以创建月报解析器
+        // m_monthParser = new MonthReportParser(this, this);
+        // if (!m_monthParser->scanAndParse()) ...
+    }
+    else {
+        m_reportType = NORMAL_EXCEL;
+        qDebug() << "加载普通Excel文件，解析##绑定和公式...";
+        // 对于普通Excel，加载后直接解析##绑定和公式
+        resolveDataBindings();
+        recalculateAllFormulas();
+    }
+
+    return true;
+}
+
+// ===== 新增：统一的数据刷新入口 =====
+bool ReportDataModel::refreshReportData()
+{
+    switch (m_reportType) {
+    case DAY_REPORT:
+        if (m_dayParser) {
+            return m_dayParser->executeQueries();
+        }
+        break;
+    case MONTH_REPORT:
+        qDebug() << "月报刷新功能待实现";
+        // if (m_monthParser) return m_monthParser->executeQueries();
+        break;
+    case NORMAL_EXCEL:
+        qDebug() << "普通Excel模式，执行##绑定刷新";
+        resolveDataBindings();
+        break;
+    }
+    return false;
+}
+
+ReportDataModel::ReportType ReportDataModel::getReportType() const {
+    return m_reportType;
+}
+
+DayReportParser* ReportDataModel::getDayParser() const {
+    return m_dayParser;
+}
+
+void ReportDataModel::notifyDataChanged() {
+    emit dataChanged(index(0, 0), index(m_maxRow - 1, m_maxCol - 1));
+}
+
 
 // --- Qt Model 核心接口实现 ---
 
@@ -111,15 +191,28 @@ QFont ReportDataModel::ensureFontAvailable(const QFont& requestedFont) const
 
 QVariant ReportDataModel::data(const QModelIndex& index, int role) const
 {
-    if (!index.isValid())
-        return QVariant();
+    if (!index.isValid()) return QVariant();
+    const CellData* cell = getCell(index.row(), index.column());
+    if (!cell) return QVariant();
 
-    //  根据当前模式分发
-    if (m_currentMode == HISTORY_MODE) {
-        return getHistoryReportCellData(index, role);
-    }
-    else {
-        return getRealtimeCellData(index, role);
+    switch (role) {
+    case Qt::DisplayRole:
+        return cell->displayText();
+    case Qt::EditRole:
+        return cell->editText();
+    case Qt::BackgroundRole:
+        if (cell->cellType == CellData::DataMarker && cell->queryExecuted && !cell->querySuccess) {
+            return QBrush(QColor(255, 220, 220)); // 查询失败显示淡红色
+        }
+        return QBrush(cell->style.backgroundColor);
+    case Qt::ForegroundRole:
+        return QBrush(cell->style.textColor);
+    case Qt::FontRole:
+        return ensureFontAvailable(cell->style.font);
+    case Qt::TextAlignmentRole:
+        return static_cast<int>(cell->style.alignment);
+    default:
+        return QVariant();
     }
 }
 
@@ -135,101 +228,68 @@ bool ReportDataModel::hasDataBindings() const
 }
 
 
+
 bool ReportDataModel::setData(const QModelIndex& index, const QVariant& value, int role)
 {
-    if (!index.isValid() || role != Qt::EditRole)
+    if (!index.isValid() || role != Qt::EditRole) {
         return false;
-
-    if (m_currentMode == HISTORY_MODE) {
-        if (m_fullTimeAxis.isEmpty()) {
-            // ===== 配置阶段：直接修改配置数据 =====
-
-            int row = index.row();
-            int col = index.column();
-
-            //  确保配置有足够的行（自动扩展，不触发信号）
-            while (row >= m_historyConfig.columns.size()) {
-                ReportColumnConfig newConfig;
-                m_historyConfig.columns.append(newConfig);
-            }
-
-            // 同步更新模型行数（如果需要）
-            if (row + 1 > m_maxRow) {
-                m_maxRow = row + 1;
-            }
-
-            // 修改配置
-            if (col == 0) {
-                m_historyConfig.columns[row].displayName = value.toString().trimmed();
-            }
-            else if (col == 1) {
-                m_historyConfig.columns[row].rtuId = value.toString().trimmed();
-            }
-
-            emit dataChanged(index, index, { role });
-            return true;
-        }
-        else {
-            // ===== 报表阶段：只允许编辑公式列 =====
-
-            // 表头不可编辑
-            if (index.row() == 0) {
-                qWarning() << "表头不可编辑";
-                return false;
-            }
-
-            // 数据列不可编辑
-            if (m_historyConfig.dataColumns.contains(index.column())) {
-                QMessageBox::warning(nullptr, "提示", "数据列为只读，请在右侧空白列添加公式。");
-                return false;
-            }
-
-            // 公式列可编辑
-            CellData* cell = ensureCell(index.row(), index.column());
-            if (!cell) return false;
-
-            QString text = value.toString();
-
-            if (text.startsWith('=')) {
-                cell->setFormula(text);
-                calculateFormula(index.row(), index.column());
-            }
-            else {
-                cell->value = value;
-            }
-
-            emit dataChanged(index, index, { role });
-            return true;
-        }
     }
 
-    // ===== 实时模式编辑（保持原有逻辑）=====
     CellData* cell = ensureCell(index.row(), index.column());
-    if (!cell) return false;
+    if (!cell) {
+        return false;
+    }
 
     QString text = value.toString();
 
-    if (text.startsWith('##'))
-    {
-        cell->isDataBinding = true;
-        cell->bindingKey = text;
-        cell->hasFormula = false;
-        cell->formula.clear();
-        cell->value = "0";
-        resolveDataBindings();
+    // 【核心修正】如果单元格是标记类型，且用户提交的内容和原始标记一样，
+    // 说明用户未做任何修改，直接返回，以保留查询后的数值。
+    if (cell->isMarker() && text == cell->originalMarker) {
+        return false; // false表示模型数据未发生变化
     }
-    else if (text.startsWith('=')) {
-        cell->isDataBinding = false;
+
+    // --- 如果代码执行到这里，说明用户确实输入了新的内容 ---
+
+    // 清理旧的状态
+    cell->isDataBinding = false;
+    cell->hasFormula = false;
+    cell->cellType = CellData::NormalCell;
+    cell->originalMarker.clear();
+    cell->formula.clear();
+    cell->bindingKey.clear();
+
+    if (text.startsWith('=')) {
+        cell->hasFormula = true;
         cell->setFormula(text);
         calculateFormula(index.row(), index.column());
     }
-    else {
-        cell->isDataBinding = false;
-        if (cell->hasFormula) {
-            cell->formula.clear();
-            cell->hasFormula = false;
+    else if (text.startsWith("##")) {
+        cell->isDataBinding = true;
+        cell->bindingKey = text;
+        cell->value = "0";
+        if (m_reportType == NORMAL_EXCEL) {
+            resolveDataBindings();
         }
+    }
+    else {
+        // 对于任何其他文本，都直接更新值
         cell->value = value;
+
+        // 如果新文本是模板标记，则记录下来
+        if (text.startsWith("#d#", Qt::CaseInsensitive)) {
+            cell->cellType = CellData::DataMarker;
+            cell->originalMarker = text;
+            cell->queryExecuted = false; // 标记为需要重新查询
+            cell->querySuccess = false;
+        }
+        else if (text.startsWith("#t#", Qt::CaseInsensitive)) {
+            cell->cellType = CellData::TimeMarker;
+            cell->originalMarker = text;
+        }
+        else if (text.startsWith("#Date", Qt::CaseInsensitive)) {
+            cell->cellType = CellData::DateMarker;
+            cell->originalMarker = text;
+        }
     }
 
     emit dataChanged(index, index, { role });
@@ -239,46 +299,20 @@ bool ReportDataModel::setData(const QModelIndex& index, const QVariant& value, i
 
 Qt::ItemFlags ReportDataModel::flags(const QModelIndex& index) const
 {
-    if (!index.isValid())
-        return Qt::NoItemFlags;
+    if (!index.isValid()) return Qt::NoItemFlags;
 
-    if (m_currentMode == HISTORY_MODE) {
-        // ===== 判断当前是配置阶段还是报表阶段 =====
-        if (m_fullTimeAxis.isEmpty()) {
-            // 配置阶段：所有单元格可编辑
-            return Qt::ItemIsEnabled | Qt::ItemIsSelectable | Qt::ItemIsEditable;
-        }
-        else {
-            // 报表阶段：
-            // - 表头只读
-            // - 数据列只读
-            // - 公式列可编辑
-            if (index.row() == 0) {
-                return Qt::ItemIsEnabled | Qt::ItemIsSelectable;  // 表头只读
-            }
-
-            //  判断是否为数据列
-            if (m_historyConfig.dataColumns.contains(index.column())) {
-                return Qt::ItemIsEnabled | Qt::ItemIsSelectable;  // 数据列只读
-            }
-
-            // 公式列可编辑
-            return Qt::ItemIsEnabled | Qt::ItemIsSelectable | Qt::ItemIsEditable;
-        }
-    }
-
-    // 检查是否是合并单元格的从属单元格
     const CellData* cell = getCell(index.row(), index.column());
-    if (cell && cell->mergedRange.isValid() && cell->mergedRange.isMerged()) {
-        // 如果不是主单元格，则不可编辑
-        if (!(index.row() == cell->mergedRange.startRow &&
-            index.column() == cell->mergedRange.startCol)) {
-            return Qt::ItemIsEnabled | Qt::ItemIsSelectable;
+    if (cell && cell->mergedRange.isMerged()) {
+        // 如果不是合并单元格的主单元格，则只启用，不可选择/编辑
+        if (index.row() != cell->mergedRange.startRow || index.column() != cell->mergedRange.startCol) {
+            return Qt::ItemIsEnabled;
         }
     }
 
+    // 所有主单元格或非合并单元格都可编辑
     return Qt::ItemIsEnabled | Qt::ItemIsSelectable | Qt::ItemIsEditable;
 }
+
 
 QVariant ReportDataModel::headerData(int section, Qt::Orientation orientation, int role) const
 {
@@ -498,24 +532,18 @@ bool ReportDataModel::removeColumns(int column, int count, const QModelIndex& pa
 
 // --- 文件操作实现 ---
 
-bool ReportDataModel::loadFromExcel(const QString& fileName)
+bool ReportDataModel::loadFromExcelFile(const QString& fileName)
 {
     beginResetModel();
-    clearAllCells(); // 这会清空 m_cells 和尺寸向量
-    m_maxRow = 100;    // 恢复默认行数
-    m_maxCol = 26;     // 恢复默认列数
+    // 清理工作已移至 loadReportTemplate
+    m_maxRow = 100;
+    m_maxCol = 26;
     endResetModel();
 
-    // 重新发出 beginResetModel 信号，为加载新数据做准备
     beginResetModel();
     bool result = ExcelHandler::loadFromFile(fileName, this);
     endResetModel();
 
-    // 加载成功后，统一重新计算所有公式
-    if (result) {
-        resolveDataBindings();
-        recalculateAllFormulas();
-    }
     return result;
 }
 
@@ -558,13 +586,23 @@ bool ReportDataModel::saveToExcel(const QString& fileName)
 
 void ReportDataModel::clearAllCells()
 {
-    if (m_cells.isEmpty()) return;
+    if (m_cells.isEmpty() && !m_dayParser) return;
 
-    // 注意：这里不调用begin/endResetModel，因为调用方(loadFromExcel)会负责
+    beginResetModel();
     qDeleteAll(m_cells);
     m_cells.clear();
-    clearSizes(); // <-- 新增这一行
+    clearSizes();
+
+    // 清理所有解析器
+    delete m_dayParser;
+    m_dayParser = nullptr;
+    // delete m_monthParser; m_monthParser = nullptr;
+
+    m_reportType = NORMAL_EXCEL;
+    m_reportName.clear();
+    endResetModel();
 }
+
 
 void ReportDataModel::addCellDirect(int row, int col, CellData* cell)
 {

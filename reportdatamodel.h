@@ -26,16 +26,22 @@ class ReportDataModel : public QAbstractTableModel
     Q_OBJECT
 
 public:
+    enum ReportType {
+        NORMAL_EXCEL, // 普通Excel或未识别
+        DAY_REPORT,   // 日报
+        MONTH_REPORT  // 为月报预留
+    };
+
     explicit ReportDataModel(QObject* parent = nullptr);
     ~ReportDataModel();
 
-    enum WorkMode {
-        REALTIME_MODE,    // 实时单元格绑定模式
-        HISTORY_MODE      // 历史报表生成模式
-    };
+    bool loadReportTemplate(const QString& fileName); // 替代 loadFromExcel 和 loadDayReport
+    bool refreshReportData();
+    ReportType getReportType() const;
+    DayReportParser* getDayParser() const; // 仅用于日报
+    void notifyDataChanged();
 
     //  添加模式管理接口
-    bool hasHistoryData() const { return !m_fullTimeAxis.isEmpty(); }
     QString getReportName() const { return m_reportName; }
     bool hasDataBindings() const;  //  检查是否有##绑定
 
@@ -56,7 +62,6 @@ public:
     bool removeColumns(int column, int count, const QModelIndex& parent = QModelIndex()) override;
 
     // 文件操作
-    bool loadFromExcel(const QString& fileName);
     bool saveToExcel(const QString& fileName);
 
     // 单元格访问
@@ -89,6 +94,9 @@ signals:
     void cellChanged(int row, int col);
 
 private:
+
+    bool loadFromExcelFile(const QString& fileName);
+
     QHash<QPoint, CellData*> m_cells;        // 改为CellData*
     int m_maxRow;
     int m_maxCol;
@@ -98,10 +106,11 @@ private:
 
     GlobalDataConfig m_globalConfig;         // 全局配置
 
-    WorkMode m_currentMode;                                   // 当前工作模式
     QString m_reportName;                                     // 报表名称
-    QVector<QDateTime> m_fullTimeAxis;                        // 完整时间轴
-    QHash<QString, QVector<double>> m_fullAlignedData;        // 对齐后的数据
+
+    ReportType m_reportType;
+    DayReportParser* m_dayParser;
+    // 预留: MonthReportParser* m_monthParser;
 };
 
 #endif // REPORTDATAMODEL_H

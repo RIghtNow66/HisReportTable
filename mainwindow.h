@@ -5,7 +5,6 @@
 #include <QToolBar>
 #include <QLineEdit>
 #include <QLabel>
-#include <QTableView>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QAction>
@@ -15,6 +14,7 @@
 #include <QSortFilterProxyModel>
 
 #include "DataBindingConfig.h" 
+#include "EnhancedTableView.h"
 
 class ReportDataModel;
 
@@ -65,7 +65,6 @@ private:
     void enterFormulaEditMode();
     void exitFormulaEditMode();
     bool isInFormulaEditMode() const;
-    void updateTableSpans();
 
     void applyRowColumnSizes();
 
@@ -87,7 +86,7 @@ private:
     QLineEdit* m_formulaEdit;
 
     // 表格
-    QTableView* m_tableView;
+    EnhancedTableView* m_tableView;
     ReportDataModel* m_dataModel;
     QSortFilterProxyModel* m_filterModel;
 

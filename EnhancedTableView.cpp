@@ -6,6 +6,7 @@
 #include <QHeaderView>
 #include <QAbstractProxyModel>
 #include <QPen>
+#include <QSet> 
 
 EnhancedTableView::EnhancedTableView(QWidget* parent)
     : QTableView(parent)
@@ -29,7 +30,9 @@ void EnhancedTableView::drawBorders(QPainter* painter)
 
     painter->save();
 
-    // 获取可见区域
+    // 用于跟踪已经绘制过的合并单元格的左上角坐标
+    QSet<QPoint> drawnSpans;
+
     QRect viewportRect = viewport()->rect();
     int firstRow = rowAt(viewportRect.top());
     int lastRow = rowAt(viewportRect.bottom());
@@ -41,74 +44,67 @@ void EnhancedTableView::drawBorders(QPainter* painter)
     if (firstCol < 0) firstCol = 0;
     if (lastCol < 0) lastCol = reportModel->columnCount() - 1;
 
-    // 绘制每个单元格的边框
     for (int row = firstRow; row <= lastRow; ++row) {
         for (int col = firstCol; col <= lastCol; ++col) {
             const CellData* cell = reportModel->getCell(row, col);
             if (!cell) continue;
 
-            QModelIndex index = reportModel->index(row, col);
-            QRect cellRect = visualRect(index);
+            // 默认情况下，单元格的“主单元格”就是它自己
+            QPoint masterCellPos(row, col);
 
-            // 处理合并单元格
-            QSize spanSize = reportModel->span(index);
-            if (spanSize.width() > 1 || spanSize.height() > 1) {
-                // 计算合并单元格的完整矩形
-                for (int r = 1; r < spanSize.height(); ++r) {
-                    QModelIndex spanIndex = reportModel->index(row + r, col);
-                    cellRect = cellRect.united(visualRect(spanIndex));
-                }
-                for (int c = 1; c < spanSize.width(); ++c) {
-                    QModelIndex spanIndex = reportModel->index(row, col + c);
-                    cellRect = cellRect.united(visualRect(spanIndex));
-                }
-                for (int r = 1; r < spanSize.height(); ++r) {
-                    for (int c = 1; c < spanSize.width(); ++c) {
-                        QModelIndex spanIndex = reportModel->index(row + r, col + c);
-                        cellRect = cellRect.united(visualRect(spanIndex));
-                    }
-                }
+            // 如果当前单元格是合并单元格的一部分，找到它的左上角主单元格
+            if (cell->mergedRange.isMerged()) {
+                masterCellPos.setX(cell->mergedRange.startRow);
+                masterCellPos.setY(cell->mergedRange.startCol);
             }
 
-            // 绘制边框
-            const RTCellBorder& border = cell->style.border;
+            // 如果这个主单元格（或它所属的合并区域）已经绘制过了，就跳过
+            if (drawnSpans.contains(masterCellPos)) {
+                continue;
+            }
 
-            // 左边框
+            // 获取主单元格的索引和它所占的完整矩形区域
+            QModelIndex masterIndex = reportModel->index(masterCellPos.x(), masterCellPos.y());
+            QRect cellRect = visualRect(masterIndex);
+
+            // 获取主单元格的样式来决定边框
+            const CellData* masterCell = reportModel->getCell(masterCellPos.x(), masterCellPos.y());
+            if (!masterCell) continue;
+
+            const RTCellBorder& border = masterCell->style.border;
+
+            // 绘制这个区域的四个外边框
+            if (border.top != RTBorderStyle::None) {
+                QPen pen(border.topColor, static_cast<int>(border.top));
+                painter->setPen(pen);
+                painter->drawLine(cellRect.topLeft(), cellRect.topRight());
+            }
+            if (border.bottom != RTBorderStyle::None) {
+                QPen pen(border.bottomColor, static_cast<int>(border.bottom));
+                painter->setPen(pen);
+                painter->drawLine(cellRect.bottomLeft(), cellRect.bottomRight());
+            }
             if (border.left != RTBorderStyle::None) {
-                QPen pen(border.leftColor);
-                pen.setWidth(static_cast<int>(border.left));
+                QPen pen(border.leftColor, static_cast<int>(border.left));
                 painter->setPen(pen);
                 painter->drawLine(cellRect.topLeft(), cellRect.bottomLeft());
             }
-
-            // 右边框
             if (border.right != RTBorderStyle::None) {
-                QPen pen(border.rightColor);
-                pen.setWidth(static_cast<int>(border.right));
+                QPen pen(border.rightColor, static_cast<int>(border.right));
                 painter->setPen(pen);
                 painter->drawLine(cellRect.topRight(), cellRect.bottomRight());
             }
 
-            // 上边框
-            if (border.top != RTBorderStyle::None) {
-                QPen pen(border.topColor);
-                pen.setWidth(static_cast<int>(border.top));
-                painter->setPen(pen);
-                painter->drawLine(cellRect.topLeft(), cellRect.topRight());
-            }
-
-            // 下边框
-            if (border.bottom != RTBorderStyle::None) {
-                QPen pen(border.bottomColor);
-                pen.setWidth(static_cast<int>(border.bottom));
-                painter->setPen(pen);
-                painter->drawLine(cellRect.bottomLeft(), cellRect.bottomRight());
+            // 如果这是一个合并区域，将它的主单元格加入“已绘制”集合
+            if (masterCell->mergedRange.isMerged()) {
+                drawnSpans.insert(masterCellPos);
             }
         }
     }
 
     painter->restore();
 }
+
 
 void EnhancedTableView::setSpan(int row, int column, int rowSpanCount, int columnSpanCount)
 {
@@ -120,16 +116,17 @@ void EnhancedTableView::updateSpans()
     ReportDataModel* reportModel = getReportModel();
     if (!reportModel) return;
 
-    // 清除现有的合并单元格设置
     clearSpans();
 
-    // 重新设置所有合并单元格
     const auto& allCells = reportModel->getAllCells();
     for (auto it = allCells.constBegin(); it != allCells.constEnd(); ++it) {
         const QPoint& pos = it.key();
         const CellData* cell = it.value();
 
-        if (cell && cell->isMergedMain()) {
+        if (cell && cell->mergedRange.isMerged() &&
+            pos.x() == cell->mergedRange.startRow &&
+            pos.y() == cell->mergedRange.startCol)
+        {
             int rowSpan = cell->mergedRange.rowSpan();
             int colSpan = cell->mergedRange.colSpan();
             if (rowSpan > 1 || colSpan > 1) {
@@ -138,6 +135,7 @@ void EnhancedTableView::updateSpans()
         }
     }
 }
+
 
 ReportDataModel* EnhancedTableView::getReportModel() const
 {

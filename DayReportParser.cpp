@@ -2,9 +2,10 @@
 #include "reportdatamodel.h"
 #include "DataBindingConfig.h"
 #include "TaosDataFetcher.h"
-#include <QDebug>
+#include <qDebug>
 #include <QDate>
 #include <QTime>
+#include <stdexcept> 
 
 DayReportParser::DayReportParser(ReportDataModel* model, QObject* parent)
     : QObject(parent)
@@ -19,29 +20,29 @@ DayReportParser::~DayReportParser()
     delete m_fetcher;
 }
 
-// ===== ºËĞÄÁ÷³Ì =====
+// ===== æ ¸å¿ƒæµç¨‹ =====
 
 bool DayReportParser::scanAndParse()
 {
-    qDebug() << "========== ¿ªÊ¼½âÎöÈÕ±¨ ==========";
+    qDebug() << "========== å¼€å§‹è§£ææ—¥æŠ¥ ==========";
 
-    // Çå¿Õ¾ÉÊı¾İ
+    // æ¸…ç©ºæ—§æ•°æ®
     m_queryTasks.clear();
     m_dateFound = false;
     m_baseDate.clear();
     m_currentTime.clear();
 
-    // µÚ1²½£º²éÕÒ #Date ±ê¼Ç
+    // ç¬¬1æ­¥ï¼šæŸ¥æ‰¾ #Date æ ‡è®°
     if (!findDateMarker()) {
-        QString errMsg = "´íÎó£ºÎ´ÕÒµ½ #Date ±ê¼Ç£¬ÎŞ·¨È·¶¨²éÑ¯ÈÕÆÚ";
+        QString errMsg = "é”™è¯¯ï¼šæœªæ‰¾åˆ° #Date æ ‡è®°ï¼Œæ— æ³•ç¡®å®šæŸ¥è¯¢æ—¥æœŸ";
         qWarning() << errMsg;
         emit parseCompleted(false, errMsg);
         return false;
     }
 
-    qDebug() << "»ù×¼ÈÕÆÚ:" << m_baseDate;
+    qDebug() << "åŸºå‡†æ—¥æœŸ:" << m_baseDate;
 
-    // µÚ2²½£ºÖğĞĞ½âÎö±ê¼Ç
+    // ç¬¬2æ­¥ï¼šé€è¡Œè§£ææ ‡è®°
     int totalRows = m_model->rowCount();
 
     for (int row = 0; row < totalRows; ++row) {
@@ -49,15 +50,15 @@ bool DayReportParser::scanAndParse()
         emit parseProgress(row + 1, totalRows);
     }
 
-    // µÚ3²½£º¼ì²é½á¹û
+    // ç¬¬3æ­¥ï¼šæ£€æŸ¥ç»“æœ
     if (m_queryTasks.isEmpty()) {
-        QString warnMsg = "¾¯¸æ£ºÎ´ÕÒµ½ÈÎºÎ #d# Êı¾İ±ê¼Ç";
+        QString warnMsg = "è­¦å‘Šï¼šæœªæ‰¾åˆ°ä»»ä½• #d# æ•°æ®æ ‡è®°";
         qWarning() << warnMsg;
         emit parseCompleted(false, warnMsg);
         return false;
     }
 
-    QString successMsg = QString("½âÎö³É¹¦£ºÕÒµ½ %1 ¸ö´ı²éÑ¯µ¥Ôª¸ñ").arg(m_queryTasks.size());
+    QString successMsg = QString("è§£ææˆåŠŸï¼šæ‰¾åˆ° %1 ä¸ªå¾…æŸ¥è¯¢å•å…ƒæ ¼").arg(m_queryTasks.size());
     qDebug() << successMsg;
     qDebug() << "========================================";
 
@@ -81,17 +82,23 @@ bool DayReportParser::findDateMarker()
                 m_baseDate = extractDate(text);
 
                 if (m_baseDate.isEmpty()) {
-                    qWarning() << "ÈÕÆÚ¸ñÊ½´íÎó:" << text;
+                    // ... (é”™è¯¯å¤„ç†)
                     return false;
                 }
 
                 m_dateFound = true;
-
-                // ±ê¼Çµ¥Ôª¸ñÀàĞÍ
                 cell->cellType = CellData::DateMarker;
                 cell->originalMarker = text;
 
-                qDebug() << QString("ÕÒµ½ #Date ±ê¼Ç: ĞĞ%1 ÁĞ%2 ¡ú %3")
+                // ===== ã€æ ¸å¿ƒä¿®æ­£ã€‘ å¼€å§‹ =====
+                QDate date = QDate::fromString(m_baseDate, "yyyy-MM-dd");
+                if (date.isValid()) {
+                    // å°†æ˜¾ç¤ºæ ¼å¼ä¿®æ”¹ä¸ºåŒ…å«å¹´ä»½
+                    cell->value = QString("%1å¹´%2æœˆ%3æ—¥").arg(date.year()).arg(date.month()).arg(date.day());
+                }
+                // ===== ã€æ ¸å¿ƒä¿®æ­£ã€‘ ç»“æŸ =====
+
+                qDebug() << QString("æ‰¾åˆ° #Date æ ‡è®°: è¡Œ%1 åˆ—%2 â†’ %3")
                     .arg(row).arg(col).arg(m_baseDate);
 
                 return true;
@@ -106,7 +113,7 @@ void DayReportParser::parseRow(int row)
 {
     int totalCols = m_model->columnCount();
 
-    // ´Ó×óµ½ÓÒÉ¨Ãè
+    // ä»å·¦åˆ°å³æ‰«æ
     for (int col = 0; col < totalCols; ++col) {
         CellData* cell = m_model->getCell(row, col);
         if (!cell) continue;
@@ -114,47 +121,47 @@ void DayReportParser::parseRow(int row)
         QString text = cell->value.toString().trimmed();
         if (text.isEmpty()) continue;
 
-        // ===== Çé¿ö1£ºÓöµ½ #t# Ê±¼ä±ê¼Ç =====
+        // ===== æƒ…å†µ1ï¼šé‡åˆ° #t# æ—¶é—´æ ‡è®° =====
         if (isTimeMarker(text)) {
             QString timeStr = extractTime(text);
             m_currentTime = timeStr;
 
-            // ±ê¼Çµ¥Ôª¸ñÀàĞÍ
+            // æ ‡è®°å•å…ƒæ ¼ç±»å‹
             cell->cellType = CellData::TimeMarker;
             cell->originalMarker = text;
 
-            // ¸üĞÂÏÔÊ¾Öµ£¨È¥µô #t# Ç°×º£¬Ö»ÏÔÊ¾ HH:mm£©
-            cell->value = timeStr.left(5);  // "00:00:00" ¡ú "00:00"
+            // æ›´æ–°æ˜¾ç¤ºå€¼ï¼ˆå»æ‰ #t# å‰ç¼€ï¼Œåªæ˜¾ç¤º HH:mmï¼‰
+            cell->value = timeStr.left(5);  // "00:00:00" â†’ "00:00"
 
-            qDebug() << QString("  ĞĞ%1 ÁĞ%2: Ê±¼ä±ê¼Ç %3 ¡ú %4")
+            qDebug() << QString("  è¡Œ%1 åˆ—%2: æ—¶é—´æ ‡è®° %3 â†’ %4")
                 .arg(row).arg(col).arg(text).arg(m_currentTime);
         }
-        // ===== Çé¿ö2£ºÓöµ½ #d# Êı¾İ±ê¼Ç =====
+        // ===== æƒ…å†µ2ï¼šé‡åˆ° #d# æ•°æ®æ ‡è®° =====
         else if (isDataMarker(text)) {
-            // ¼ì²éÇ°ÖÃÌõ¼ş
+            // æ£€æŸ¥å‰ç½®æ¡ä»¶
             if (m_currentTime.isEmpty()) {
-                qWarning() << QString("¾¯¸æ£ºĞĞ%1ÁĞ%2 È±ÉÙÊ±¼äĞÅÏ¢£¬Ìø¹ı").arg(row).arg(col);
+                qWarning() << QString("è­¦å‘Šï¼šè¡Œ%1åˆ—%2 ç¼ºå°‘æ—¶é—´ä¿¡æ¯ï¼Œè·³è¿‡").arg(row).arg(col);
                 continue;
             }
 
             QString rtuId = extractRtuId(text);
             if (rtuId.isEmpty()) {
-                qWarning() << QString("¾¯¸æ£ºĞĞ%1ÁĞ%2 RTUºÅÎª¿Õ£¬Ìø¹ı").arg(row).arg(col);
+                qWarning() << QString("è­¦å‘Šï¼šè¡Œ%1åˆ—%2 RTUå·ä¸ºç©ºï¼Œè·³è¿‡").arg(row).arg(col);
                 continue;
             }
 
-            // ±ê¼Çµ¥Ôª¸ñÀàĞÍ
+            // æ ‡è®°å•å…ƒæ ¼ç±»å‹
             cell->cellType = CellData::DataMarker;
             cell->originalMarker = text;
             cell->rtuId = rtuId;
 
-            // ¹¹½¨²éÑ¯µØÖ·
+            // æ„å»ºæŸ¥è¯¢åœ°å€
             QDateTime startTime = constructDateTime(m_baseDate, m_currentTime);
             QString queryPath = buildQueryPath(rtuId, startTime);
 
             cell->queryPath = queryPath;
 
-            // Ìí¼Óµ½²éÑ¯ÈÎÎñÁĞ±í
+            // æ·»åŠ åˆ°æŸ¥è¯¢ä»»åŠ¡åˆ—è¡¨
             QueryTask task;
             task.cell = cell;
             task.row = row;
@@ -162,7 +169,7 @@ void DayReportParser::parseRow(int row)
             task.queryPath = queryPath;
             m_queryTasks.append(task);
 
-            qDebug() << QString("  ĞĞ%1 ÁĞ%2: Êı¾İ±ê¼Ç %3 ¡ú ²éÑ¯µØÖ·: %4")
+            qDebug() << QString("  è¡Œ%1 åˆ—%2: æ•°æ®æ ‡è®° %3 â†’ æŸ¥è¯¢åœ°å€: %4")
                 .arg(row).arg(col).arg(text).arg(queryPath);
         }
     }
@@ -171,12 +178,12 @@ void DayReportParser::parseRow(int row)
 bool DayReportParser::executeQueries()
 {
     if (m_queryTasks.isEmpty()) {
-        qWarning() << "Ã»ÓĞ´ı²éÑ¯µÄÈÎÎñ";
+        qWarning() << "æ²¡æœ‰å¾…æŸ¥è¯¢çš„ä»»åŠ¡";
         return false;
     }
 
-    qDebug() << "========== ¿ªÊ¼Ö´ĞĞ²éÑ¯ ==========";
-    qDebug() << "´ı²éÑ¯ÊıÁ¿:" << m_queryTasks.size();
+    qDebug() << "========== å¼€å§‹æ‰§è¡ŒæŸ¥è¯¢ ==========";
+    qDebug() << "å¾…æŸ¥è¯¢æ•°é‡:" << m_queryTasks.size();
 
     int successCount = 0;
     int failCount = 0;
@@ -185,27 +192,27 @@ bool DayReportParser::executeQueries()
     for (int i = 0; i < total; ++i) {
         const QueryTask& task = m_queryTasks[i];
 
-        qDebug() << QString("[%1/%2] ²éÑ¯: %3")
+        qDebug() << QString("[%1/%2] æŸ¥è¯¢: %3")
             .arg(i + 1).arg(total).arg(task.queryPath);
 
         try {
             QVariant result = querySinglePoint(task.queryPath);
 
-            // ¸üĞÂµ¥Ôª¸ñ
+            // æ›´æ–°å•å…ƒæ ¼
             task.cell->value = result;
             task.cell->queryExecuted = true;
             task.cell->querySuccess = true;
 
             successCount++;
 
-            qDebug() << QString(" ³É¹¦: ĞĞ%1ÁĞ%2 = %3")
+            qDebug() << QString(" æˆåŠŸ: è¡Œ%1åˆ—%2 = %3")
                 .arg(task.row).arg(task.col).arg(result.toString());
         }
         catch (const std::exception& e) {
-            qWarning() << QString("Ê§°Ü: ĞĞ%1ÁĞ%2 - %3")
+            qWarning() << QString("å¤±è´¥: è¡Œ%1åˆ—%2 - %3")
                 .arg(task.row).arg(task.col).arg(e.what());
 
-            // ²éÑ¯Ê§°Ü£¬ÏÔÊ¾ ERROR
+            // æŸ¥è¯¢å¤±è´¥ï¼Œæ˜¾ç¤º ERROR
             task.cell->value = "ERROR";
             task.cell->queryExecuted = true;
             task.cell->querySuccess = false;
@@ -217,9 +224,9 @@ bool DayReportParser::executeQueries()
     }
 
     qDebug() << "========================================";
-    qDebug() << QString("²éÑ¯Íê³É: ³É¹¦ %1, Ê§°Ü %2").arg(successCount).arg(failCount);
+    qDebug() << QString("æŸ¥è¯¢å®Œæˆ: æˆåŠŸ %1, å¤±è´¥ %2").arg(successCount).arg(failCount);
 
-    // Í¨ÖªÄ£ĞÍË¢ĞÂÏÔÊ¾
+    // é€šçŸ¥æ¨¡å‹åˆ·æ–°æ˜¾ç¤º
     m_model->notifyDataChanged();
 
     emit queryCompleted(successCount, failCount);
@@ -229,27 +236,27 @@ bool DayReportParser::executeQueries()
 
 QVariant DayReportParser::querySinglePoint(const QString& queryPath)
 {
-    // µ÷ÓÃ TaosDataFetcher Ö´ĞĞ²éÑ¯
+    // è°ƒç”¨ TaosDataFetcher æ‰§è¡ŒæŸ¥è¯¢
     auto dataMap = m_fetcher->fetchDataFromAddress(queryPath.toStdString());
 
     if (dataMap.empty()) {
-        throw std::runtime_error("²éÑ¯ÎŞÊı¾İ");
+        throw std::runtime_error("æŸ¥è¯¢æ— æ•°æ®");
     }
 
-    // È¡µÚÒ»¸öÊ±¼äµãµÄµÚÒ»¸öÖµ
+    // å–ç¬¬ä¸€ä¸ªæ—¶é—´ç‚¹çš„ç¬¬ä¸€ä¸ªå€¼
     auto firstEntry = dataMap.begin();
     if (firstEntry->second.empty()) {
-        throw std::runtime_error("Êı¾İÎª¿Õ");
+        throw std::runtime_error("æ•°æ®ä¸ºç©º");
     }
 
     float value = firstEntry->second[0];
 
-    // ×ª»»Îªdouble²¢±£Áô2Î»Ğ¡Êı
+    // è½¬æ¢ä¸ºdoubleå¹¶ä¿ç•™2ä½å°æ•°
     double result = static_cast<double>(value);
     return QString::number(result, 'f', 2);
 }
 
-// ===== ±ê¼ÇÊ¶±ğ =====
+// ===== æ ‡è®°è¯†åˆ« =====
 
 bool DayReportParser::isDateMarker(const QString& text) const
 {
@@ -266,17 +273,17 @@ bool DayReportParser::isDataMarker(const QString& text) const
     return text.startsWith("#d#", Qt::CaseInsensitive);
 }
 
-// ===== ĞÅÏ¢ÌáÈ¡ =====
+// ===== ä¿¡æ¯æå– =====
 
 QString DayReportParser::extractDate(const QString& text)
 {
-    // "#Date:2024-01-01" ¡ú "2024-01-01"
-    QString dateStr = text.mid(6).trimmed();  // Ìø¹ı "#Date:"
+    // "#Date:2024-01-01" â†’ "2024-01-01"
+    QString dateStr = text.mid(6).trimmed();  // è·³è¿‡ "#Date:"
 
-    // ÑéÖ¤ÈÕÆÚ¸ñÊ½
+    // éªŒè¯æ—¥æœŸæ ¼å¼
     QDate date = QDate::fromString(dateStr, "yyyy-MM-dd");
     if (!date.isValid()) {
-        qWarning() << "ÈÕÆÚ¸ñÊ½´íÎó£¬ÆÚÍû yyyy-MM-dd£¬Êµ¼Ê:" << dateStr;
+        qWarning() << "æ—¥æœŸæ ¼å¼é”™è¯¯ï¼ŒæœŸæœ› yyyy-MM-ddï¼Œå®é™…:" << dateStr;
         return QString();
     }
 
@@ -285,53 +292,53 @@ QString DayReportParser::extractDate(const QString& text)
 
 QString DayReportParser::extractTime(const QString& text)
 {
-    // "#t#0:00" ¡ú "00:00:00"
-    // "#t#13:30" ¡ú "13:30:00"
+    // "#t#0:00" â†’ "00:00:00"
+    // "#t#13:30" â†’ "13:30:00"
 
-    QString timeStr = text.mid(3).trimmed();  // Ìø¹ı "#t#"
+    QString timeStr = text.mid(3).trimmed();  // è·³è¿‡ "#t#"
 
-    // ´¦Àí²»Í¬¸ñÊ½
+    // å¤„ç†ä¸åŒæ ¼å¼
     QStringList parts = timeStr.split(":");
 
     if (parts.size() == 2) {
-        // "0:00" ¡ú "00:00:00"
+        // "0:00" â†’ "00:00:00"
         timeStr += ":00";
     }
     else if (parts.size() != 3) {
-        qWarning() << "Ê±¼ä¸ñÊ½´íÎó:" << text;
+        qWarning() << "æ—¶é—´æ ¼å¼é”™è¯¯:" << text;
         return "00:00:00";
     }
 
-    // ³¢ÊÔ½âÎö²¢¸ñÊ½»¯
+    // å°è¯•è§£æå¹¶æ ¼å¼åŒ–
     QTime time = QTime::fromString(timeStr, "H:mm:ss");
     if (!time.isValid()) {
-        qWarning() << "Ê±¼ä½âÎöÊ§°Ü:" << timeStr;
+        qWarning() << "æ—¶é—´è§£æå¤±è´¥:" << timeStr;
         return "00:00:00";
     }
 
-    // ·µ»Ø±ê×¼¸ñÊ½ "HH:mm:ss"
+    // è¿”å›æ ‡å‡†æ ¼å¼ "HH:mm:ss"
     return time.toString("HH:mm:ss");
 }
 
 QString DayReportParser::extractRtuId(const QString& text)
 {
-    // "#d#AIRTU034700019" ¡ú "AIRTU034700019"
+    // "#d#AIRTU034700019" â†’ "AIRTU034700019"
     return text.mid(3).trimmed();
 }
 
-// ===== ²éÑ¯µØÖ·¹¹½¨ =====
+// ===== æŸ¥è¯¢åœ°å€æ„å»º =====
 
 QString DayReportParser::buildQueryPath(const QString& rtuId, const QDateTime& baseTime)
 {
-    // ÆğÊ¼Ê±¼ä£ºÓÃ»§Ö¸¶¨µÄÊ±¼ä
+    // èµ·å§‹æ—¶é—´ï¼šç”¨æˆ·æŒ‡å®šçš„æ—¶é—´
     QString startTime = baseTime.toString("yyyy-MM-dd HH:mm:ss");
 
-    // ½áÊøÊ±¼ä£ºÆğÊ¼Ê±¼ä + 1·ÖÖÓ
+    // ç»“æŸæ—¶é—´ï¼šèµ·å§‹æ—¶é—´ + 1åˆ†é’Ÿ
     QDateTime endTime = baseTime.addSecs(60);
     QString endTimeStr = endTime.toString("yyyy-MM-dd HH:mm:ss");
 
-    // ²éÑ¯¸ñÊ½£ºRTUºÅ@ÆğÊ¼Ê±¼ä~½áÊøÊ±¼ä#¼ä¸ô(Ãë)
-    // Ê¾Àı£ºAIRTU034700019@2024-01-01 00:00:00~2024-01-01 00:01:00#1
+    // æŸ¥è¯¢æ ¼å¼ï¼šRTUå·@èµ·å§‹æ—¶é—´~ç»“æŸæ—¶é—´#é—´éš”(ç§’)
+    // ç¤ºä¾‹ï¼šAIRTU034700019@2024-01-01 00:00:00~2024-01-01 00:01:00#1
     return QString("%1@%2~%3#1")
         .arg(rtuId)
         .arg(startTime)
@@ -340,12 +347,12 @@ QString DayReportParser::buildQueryPath(const QString& rtuId, const QDateTime& b
 
 QDateTime DayReportParser::constructDateTime(const QString& date, const QString& time)
 {
-    // "2024-01-01" + "00:00:00" ¡ú QDateTime
+    // "2024-01-01" + "00:00:00" â†’ QDateTime
     QString dateTimeStr = date + " " + time;
     QDateTime result = QDateTime::fromString(dateTimeStr, "yyyy-MM-dd HH:mm:ss");
 
     if (!result.isValid()) {
-        qWarning() << "ÈÕÆÚÊ±¼ä¹¹ÔìÊ§°Ü:" << dateTimeStr;
+        qWarning() << "æ—¥æœŸæ—¶é—´æ„é€ å¤±è´¥:" << dateTimeStr;
     }
 
     return result;
