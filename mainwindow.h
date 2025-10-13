@@ -14,7 +14,6 @@
 #include <QPushButton>
 #include <QSortFilterProxyModel>
 
-#include "TimeSettingsDialog.h"  // 新增
 #include "DataBindingConfig.h" 
 
 class ReportDataModel;
@@ -70,8 +69,6 @@ private:
 
     void applyRowColumnSizes();
 
-    void refreshHistoryReport();
-
     QString adjustFormulaReferences(const QString& formula, int rowOffset);
 
     int findFillEndRow(int currentRow, int currentCol);
@@ -106,9 +103,6 @@ private:
     bool m_updating;
     bool m_formulaEditMode; // 新增：标识是否在公式编辑模式
     QModelIndex m_formulaEditingIndex; // 新增：记录正在编辑公式的单元格
-
-
-    GlobalDataConfig m_globalConfig;  // 全局配置
 };
 
 #endif // MAINWINDOW_H

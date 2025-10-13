@@ -1,10 +1,5 @@
 ﻿#pragma execution_character_set("utf-8")
 
-#include "mainwindow.h"
-#include "reportdatamodel.h"
-#include "EnhancedTableView.h"
-#include "TaosDataFetcher.h"
-
 #include <QApplication>
 #include <QFileDialog>
 #include <QMessageBox>
@@ -17,6 +12,12 @@
 #include <QDebug>
 #include <QShortcut>
 #include <QRegularExpression> 
+
+#include "mainwindow.h"
+#include "reportdatamodel.h"
+#include "EnhancedTableView.h"
+#include "TaosDataFetcher.h"
+#include "DayReportParser.h" 
 
 
 MainWindow::MainWindow(QWidget* parent)
@@ -312,40 +313,35 @@ void MainWindow::onImportExcel()
 
     if (fileName.isEmpty()) return;
 
-    // 提取文件名并判断模式
     QFileInfo fileInfo(fileName);
     QString baseFileName = fileInfo.fileName();
 
-    if (baseFileName.startsWith("#REPO_")) {
-        // ========== 历史报表模式 ==========
-        m_dataModel->setWorkMode(ReportDataModel::HISTORY_MODE);
+    // ===== 新增：文件类型判断 =====
+    if (baseFileName.startsWith("##Day_", Qt::CaseInsensitive)) {
+        // ========== 日报模式 ==========
+        qDebug() << "检测到日报文件:" << baseFileName;
 
-        // 提取报表名称
-        QString reportName = baseFileName.mid(6); // 去掉 "#REPO_"
-        reportName = reportName.left(reportName.lastIndexOf('.')); 
+        m_tableView->clearSpans();
 
-        // 加载报表配置
-        if (!m_dataModel->loadReportConfig(fileName)) {
-            QMessageBox::warning(this, "错误", "配置文件格式错误！\n请检查文件格式是否正确。");
-            return;
+        if (m_dataModel->loadDayReport(fileName)) {
+            applyRowColumnSizes();
+            setWindowTitle(QString("SCADA报表控件 - [%1]").arg(baseFileName));
+
+            QMessageBox::information(this, "日报已加载",
+                QString("日报配置已加载：%1\n\n"
+                    "当前显示的是配置模板（包含 #Date、#t#、#d# 标记）。\n\n"
+                    "请点击工具栏的 [刷新数据] 按钮执行查询并填充数据。")
+                .arg(baseFileName));
         }
-
-        // 显示配置文件内容（2列表格）
-        m_dataModel->displayConfigFileContent();
-
-        // 更新窗口标题
-        setWindowTitle(QString("SCADA报表控件 - [%1]").arg(reportName));
-
-        // 状态栏提示用户下一步操作
-        QMessageBox::information(this, "配置已加载",
-            QString("报表配置已加载：%1\n\n请点击工具栏的 [刷新数据] 按钮设置时间范围并生成报表。").arg(reportName));
-
+        else {
+            QMessageBox::warning(this, "错误", "日报文件加载失败！\n\n请检查：\n"
+                "1. 文件是否损坏\n"
+                "2. 是否包含 #Date 标记\n"
+                "3. 是否包含 #d# 数据标记");
+        }
     }
     else {
-        // ========== 实时模式（原有逻辑） ==========
-        m_dataModel->setWorkMode(ReportDataModel::REALTIME_MODE);
-
-        // 清除旧的合并单元格信息
+        // ========== 普通Excel模式（保留原逻辑）==========
         m_tableView->clearSpans();
 
         if (m_dataModel->loadFromExcel(fileName)) {
@@ -363,47 +359,22 @@ void MainWindow::onImportExcel()
 
 void MainWindow::onExportExcel()
 {
-    ReportDataModel::WorkMode mode = m_dataModel->currentMode();
+    QString fileName = QFileDialog::getSaveFileName(this,
+        "导出Excel文件", "", "Excel文件 (*.xlsx)");
 
-    if (mode == ReportDataModel::HISTORY_MODE) {
-        // ========== 历史模式：导出完整报表 ==========
-        if (!m_dataModel->hasHistoryData()) {
-            QMessageBox::warning(this, "提示", "当前没有报表数据，请先点击 [刷新数据] 生成报表。");
-            return;
-        }
+    if (fileName.isEmpty()) return;
 
-        QString fileName = QFileDialog::getSaveFileName(this,
-            "导出报表", "", "Excel文件 (*.xlsx)");
+    // 日报和普通Excel都使用相同的导出逻辑
+    // 日报导出时会包含查询后的实际数值
 
-        if (fileName.isEmpty()) return;
-
-        QProgressDialog progress("正在导出Excel...", "取消", 0, 100, this);
-        progress.setWindowModality(Qt::WindowModal);
-        progress.show();
-
-        if (m_dataModel->exportHistoryReportToExcel(fileName, &progress)) {
-            QMessageBox::information(this, "成功", "报表已导出！");
-        }
-        else {
-            QMessageBox::warning(this, "失败", "导出失败，请检查文件路径或权限。");
-        }
-
+    if (m_dataModel->saveToExcel(fileName)) {
+        QMessageBox::information(this, "成功", "文件导出成功！");
     }
     else {
-        // ========== 实时模式：原有逻辑 ==========
-        QString fileName = QFileDialog::getSaveFileName(this,
-            "导出Excel文件", "", "Excel文件 (*.xlsx)");
-
-        if (!fileName.isEmpty()) {
-            if (m_dataModel->saveToExcel(fileName)) {
-                QMessageBox::information(this, "成功", "文件导出成功！");
-            }
-            else {
-                QMessageBox::warning(this, "错误", "文件导出失败！");
-            }
-        }
+        QMessageBox::warning(this, "错误", "文件导出失败！");
     }
 }
+
 
 void MainWindow::onFind()
 {
@@ -712,15 +683,85 @@ void MainWindow::applyRowColumnSizes()
     }
 }
 
-// 新增：刷新数据槽函数（预留）
 void MainWindow::onRefreshData()
 {
-    ReportDataModel::WorkMode mode = m_dataModel->currentMode();
+    if (m_dataModel->isDayReport()) {
+        // ========== 日报模式：执行查询 ==========
 
-    if (mode == ReportDataModel::REALTIME_MODE) {
-        // ========== 实时模式：刷新##绑定数据 ==========
+        DayReportParser* parser = m_dataModel->getDayParser();
+        if (!parser || !parser->isValid()) {
+            QMessageBox::warning(this, "错误", "日报解析器未初始化或无效！");
+            return;
+        }
 
-        //  检查是否有##绑定
+        int queryCount = parser->getPendingQueryCount();
+
+        // 确认对话框
+        auto reply = QMessageBox::question(this, "确认查询",
+            QString("即将查询 %1 个数据点，是否继续？\n\n"
+                "基准日期: %2\n"
+                "说明: 查询可能需要一些时间，请耐心等待。")
+            .arg(queryCount)
+            .arg(parser->getBaseDate()),
+            QMessageBox::Yes | QMessageBox::No,
+            QMessageBox::Yes);
+
+        if (reply == QMessageBox::No) {
+            return;
+        }
+
+        // 显示进度条
+        QProgressDialog progress("正在查询数据...", "取消", 0, queryCount, this);
+        progress.setWindowModality(Qt::WindowModal);
+        progress.setMinimumDuration(0);
+        progress.show();
+
+        // 连接进度信号
+        connect(parser, &DayReportParser::queryProgress,
+            &progress, [&](int current, int total) {
+                progress.setValue(current);
+                progress.setLabelText(QString("正在查询: %1/%2").arg(current).arg(total));
+                qApp->processEvents();
+
+                if (progress.wasCanceled()) {
+                    // TODO: 实现取消功能
+                }
+            });
+
+        // 连接完成信号
+        connect(parser, &DayReportParser::queryCompleted,
+            &progress, [&](int successCount, int failCount) {
+                progress.setValue(queryCount);
+
+                QString message;
+                if (failCount == 0) {
+                    message = QString("查询完成！\n\n"
+                        "成功: %1 个\n"
+                        "失败: %2 个")
+                        .arg(successCount).arg(failCount);
+                    QMessageBox::information(this, "完成", message);
+                }
+                else {
+                    message = QString("查询完成，但有部分失败。\n\n"
+                        "成功: %1 个\n"
+                        "失败: %2 个\n\n"
+                        "失败的单元格显示为红色背景（ERROR）。\n"
+                        "请检查网络连接或RTU号是否正确。")
+                        .arg(successCount).arg(failCount);
+                    QMessageBox::warning(this, "部分失败", message);
+                }
+            });
+
+        // 执行查询
+        bool success = m_dataModel->refreshDayReportData();
+
+        if (!success) {
+            QMessageBox::warning(this, "失败", "查询过程中发生错误！");
+        }
+    }
+    else {
+        // ========== 普通模式：数据绑定刷新（保留原逻辑）==========
+
         if (!m_dataModel->hasDataBindings()) {
             QMessageBox::information(this, "提示",
                 "当前表格中没有数据绑定（##标记的单元格）。\n\n"
@@ -730,214 +771,6 @@ void MainWindow::onRefreshData()
 
         m_dataModel->resolveDataBindings();
         QMessageBox::information(this, "完成", "实时数据已更新！");
-
-    }
-    else if (mode == ReportDataModel::HISTORY_MODE) {
-        // ========== 历史模式：弹出时间对话框 ==========
-
-        TimeSettingsDialog dlg(this);
-
-        // 设置对话框标题
-        QString reportName = m_dataModel->getReportName();
-        dlg.setWindowTitle(QString("设置 [%1] 的时间范围").arg(reportName));
-
-        // 如果之前已经设置过时间，加载上次的值
-        if (m_globalConfig.globalTimeRange.startTime.isValid()) {
-            dlg.setStartTime(m_globalConfig.globalTimeRange.startTime);
-            // 可以继续设置其他参数...
-        }
-        else {
-            // 默认值：今日00:00到现在
-            QDateTime now = QDateTime::currentDateTime();
-            dlg.setStartTime(QDateTime(now.date(), QTime(0, 0, 0)));
-        }
-
-        if (dlg.exec() == QDialog::Accepted) {
-            // 更新全局时间配置
-            m_globalConfig.globalTimeRange.startTime = dlg.getStartTime();
-            m_globalConfig.globalTimeRange.endTime = dlg.getEndTime();
-            m_globalConfig.globalTimeRange.intervalSeconds = dlg.getIntervalSeconds();
-
-            // 执行查询并生成报表
-            refreshHistoryReport();
-        }
-        // 用户点取消 → 不做任何操作
-    }
-}
-
-void MainWindow::refreshHistoryReport()
-{
-    HistoryReportConfig config = m_dataModel->getHistoryConfig();
-    const TimeRangeConfig& timeRange = m_globalConfig.globalTimeRange;
-
-    // 0. 过滤掉空配置行
-    QVector<ReportColumnConfig> validColumns;
-    for (const auto& col : config.columns) {
-        if (!col.displayName.trimmed().isEmpty() && !col.rtuId.trimmed().isEmpty()) {
-            validColumns.append(col);
-        }
-    }
-
-    if (validColumns.isEmpty()) {
-        QMessageBox::warning(this, "错误", "配置中没有有效的列（名称和RTU号不能为空）");
-        return;
-    }
-
-    config.columns = validColumns;
-
-    // 1. 生成时间轴
-    QVector<QDateTime> timeAxis = ReportDataModel::generateTimeAxis(timeRange);
-    int totalPoints = timeAxis.size();
-    int totalColumns = config.columns.size();
-
-    if (totalPoints == 0) {
-        QMessageBox::warning(this, "错误", "时间范围配置错误，无法生成时间轴。");
-        return;
-    }
-
-    // ✅ 新增：单点查询不需要数据量预警
-    bool isSinglePoint = (timeRange.intervalSeconds == 0);
-
-    if (!isSinglePoint) {
-        // 2. 数据量预警（仅对范围查询）
-        if (totalPoints > 50000) {
-            auto reply = QMessageBox::question(this, "数据量警告",
-                QString("将生成 %1 行数据（约 %2 MB内存），\n"
-                    "查询和渲染可能需要较长时间。\n\n"
-                    "建议：\n"
-                    "• 增大时间间隔（当前：%3秒）\n"
-                    "• 缩短时间范围\n\n"
-                    "是否继续？")
-                .arg(totalPoints)
-                .arg(totalPoints * totalColumns * 8 / 1024 / 1024)
-                .arg(timeRange.intervalSeconds),
-                QMessageBox::Yes | QMessageBox::No,
-                QMessageBox::No);
-
-            if (reply == QMessageBox::No) return;
-        }
-        else if (totalPoints > 20000) {
-            QMessageBox::information(this, "提示",
-                QString("将生成 %1 行数据，可能需要 10-30 秒，请耐心等待...").arg(totalPoints));
-        }
-    }
-
-    // 3. 显示进度条
-    QString progressText = isSinglePoint ? "正在查询单点数据..." : "正在查询历史数据...";
-    QProgressDialog progress(progressText, "取消", 0, 100, this);
-    progress.setWindowModality(Qt::WindowModal);
-    progress.setMinimumDuration(0);
-    progress.show();
-    qApp->processEvents();
-
-    // 4. 批量查询所有RTU
-    TaosDataFetcher fetcher;
-    QHash<QString, std::map<int64_t, std::vector<float>>> rawData;
-    QStringList failedRTUs;
-
-    for (int i = 0; i < totalColumns; i++) {
-        if (progress.wasCanceled()) {
-            QMessageBox::information(this, "已取消", "数据查询已取消。");
-            return;
-        }
-
-        const ReportColumnConfig& col = config.columns[i];
-
-        // ✅ 单点查询：查询用户指定的时间点
-        QString address;
-        if (isSinglePoint) {
-            // 单点查询：起始时间为用户指定时间，结束时间为起始时间+1分钟，间隔1秒
-            QDateTime endTime = timeRange.startTime.addSecs(60);
-            address = QString("%1@%2~%3#1")
-                .arg(col.rtuId)
-                .arg(timeRange.startTime.toString("yyyy-MM-dd HH:mm:ss"))
-                .arg(endTime.toString("yyyy-MM-dd HH:mm:ss"));
-        }
-        else {
-            // 范围查询：正常构造地址
-            address = QString("%1@%2~%3#%4")
-                .arg(col.rtuId)
-                .arg(timeRange.startTime.toString("yyyy-MM-dd HH:mm:ss"))
-                .arg(timeRange.endTime.toString("yyyy-MM-dd HH:mm:ss"))
-                .arg(timeRange.intervalSeconds);
-        }
-
-        try {
-            auto data = fetcher.fetchDataFromAddress(address.toStdString());
-
-            if (data.empty()) {
-                qWarning() << "RTU无数据:" << col.rtuId;
-                failedRTUs.append(QString("%1 (无数据)").arg(col.displayName));
-                rawData[col.rtuId] = {};
-            }
-            else {
-                rawData[col.rtuId] = data;
-            }
-
-        }
-        catch (const std::exception& e) {
-            qWarning() << "RTU查询失败:" << col.rtuId << e.what();
-            failedRTUs.append(QString("%1 (查询失败: %2)").arg(col.displayName).arg(e.what()));
-            rawData[col.rtuId] = {};
-        }
-
-        progress.setValue(10 + i * 70 / totalColumns);
-        qApp->processEvents();
-    }
-
-    // 5. 数据对齐（单点查询不需要插值，直接使用查询结果的第一个点）
-    QHash<QString, QVector<double>> alignedData;
-
-    if (isSinglePoint) {
-        // ✅ 单点查询：直接提取第一个时间点的数据，不做插值
-        for (auto it = rawData.constBegin(); it != rawData.constEnd(); ++it) {
-            QString rtuId = it.key();
-            const std::map<int64_t, std::vector<float>>& dataMap = it.value();
-
-            QVector<double> singleValue;
-            if (!dataMap.empty()) {
-                // 取第一个数据点（就是用户查询的时间点）
-                float value = dataMap.begin()->second[0];
-                singleValue.append(static_cast<double>(value));
-            }
-            else {
-                // 无数据时填充NaN
-                singleValue.append(std::numeric_limits<double>::quiet_NaN());
-            }
-            alignedData[rtuId] = singleValue;
-        }
-    }
-    else {
-        // 范围查询：使用线性插值对齐
-        alignedData = ReportDataModel::alignDataWithInterpolation(rawData, timeAxis);
-    }
-
-    progress.setValue(90);
-
-    // 6. 生成表格
-    m_dataModel->generateHistoryReport(config, alignedData, timeAxis);
-    progress.setValue(100);
-
-    // 7. 完成提示
-    QString message;
-    if (isSinglePoint) {
-        message = QString("单点查询完成：%1 列\n时间点：%2")
-            .arg(totalColumns + 1)
-            .arg(timeRange.startTime.toString("yyyy-MM-dd HH:mm:ss"));
-    }
-    else {
-        message = QString("报表生成完成：%1 行 × %2 列")
-            .arg(totalPoints + 1)
-            .arg(totalColumns + 1);
-    }
-
-    if (!failedRTUs.isEmpty()) {
-        message += QString("\n\n以下列查询失败或无数据：\n%1")
-            .arg(failedRTUs.join("\n"));
-        QMessageBox::warning(this, "部分数据缺失", message);
-    }
-    else {
-        QMessageBox::information(this, "成功", message);
     }
 }
 

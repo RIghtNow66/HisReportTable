@@ -19,6 +19,7 @@ inline uint qHash(const QPoint& key, uint seed = 0) noexcept
 }
 
 class FormulaEngine;
+class DayReportParser;
 
 class ReportDataModel : public QAbstractTableModel
 {
@@ -34,30 +35,10 @@ public:
     };
 
     //  添加模式管理接口
-    void setWorkMode(WorkMode mode);
-    WorkMode currentMode() const { return m_currentMode; }
-    bool isHistoryMode() const { return m_currentMode == HISTORY_MODE; }
-
-    //  添加历史模式接口
-    bool loadReportConfig(const QString& filePath);
-    void displayConfigFileContent();
-    void generateHistoryReport(
-        const HistoryReportConfig& config,
-        const QHash<QString, QVector<double>>& alignedData,
-        const QVector<QDateTime>& timeAxis
-    );
-    bool exportHistoryReportToExcel(const QString& fileName, QProgressDialog* progress = nullptr);
     bool hasHistoryData() const { return !m_fullTimeAxis.isEmpty(); }
     QString getReportName() const { return m_reportName; }
-    const HistoryReportConfig& getHistoryConfig() const { return m_historyConfig; }
     bool hasDataBindings() const;  //  检查是否有##绑定
 
-    //  添加静态工具函数
-    static QVector<QDateTime> generateTimeAxis(const TimeRangeConfig& config);
-    static QHash<QString, QVector<double>> alignDataWithInterpolation(
-        const QHash<QString, std::map<int64_t, std::vector<float>>>& rawData,
-        const QVector<QDateTime>& timeAxis
-    );
 
     // Qt Model 接口
     int rowCount(const QModelIndex& parent = QModelIndex()) const override;
@@ -90,11 +71,6 @@ public:
     void calculateFormula(int row, int col);
     QString cellAddress(int row, int col) const;
 
-    // 全局配置管理
-    void setGlobalConfig(const GlobalDataConfig& config);
-    GlobalDataConfig getGlobalConfig() const;
-    void updateGlobalTimeRange(const TimeRangeConfig& timeRange);
-
     // 行高列宽
     void setRowHeight(int row, double height);
     double getRowHeight(int row) const;
@@ -108,12 +84,6 @@ public:
     void resolveDataBindings();
 
     QFont ensureFontAvailable(const QFont& requestedFont) const;
-
-    void restoreBindingsToConfigStage();
-
-private:
-    QVariant getRealtimeCellData(const QModelIndex& index, int role) const;
-    QVariant getHistoryReportCellData(const QModelIndex& index, int role) const;
 
 signals:
     void cellChanged(int row, int col);
@@ -130,7 +100,6 @@ private:
 
     WorkMode m_currentMode;                                   // 当前工作模式
     QString m_reportName;                                     // 报表名称
-    HistoryReportConfig m_historyConfig;                      // 报表配置
     QVector<QDateTime> m_fullTimeAxis;                        // 完整时间轴
     QHash<QString, QVector<double>> m_fullAlignedData;        // 对齐后的数据
 };
