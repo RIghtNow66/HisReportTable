@@ -131,20 +131,22 @@ struct CellData {
     }
 
     // 获取显示文本
-    QString displayText() const {
-        if (hasFormula) {
-            return value.toString();  // 公式显示计算结果
+    QString displayText(bool isDataRefreshed) const {
+        // 如果有公式，并且数据尚未刷新，则显示公式本身
+        if (hasFormula && !isDataRefreshed) {
+            return "=" + formula;
         }
+        // 在其他所有情况下（无公式，或有公式且数据已刷新），显示计算后的值
         return value.toString();
     }
 
     // 获取编辑文本
     QString editText() const {
         if (hasFormula) {
-            return "=" + formula;  // 编辑时显示公式
+            return "=" + formula; // 编辑时总是显示公式
         }
-        if (cellType == DataMarker && !originalMarker.isEmpty()) {
-            return originalMarker;  // 日报标记编辑时显示原始标记
+        if (!originalMarker.isEmpty()) {
+            return originalMarker; // 日报标记编辑时显示原始标记
         }
         return value.toString();
     }

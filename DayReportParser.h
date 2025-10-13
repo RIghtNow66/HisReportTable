@@ -10,6 +10,7 @@
 class ReportDataModel;
 class TaosDataFetcher;
 struct CellData;
+class QProgressDialog;
 
 class DayReportParser : public QObject
 {
@@ -21,7 +22,9 @@ public:
 
     // ===== 核心接口 =====
     bool scanAndParse();
-    bool executeQueries();
+    bool executeQueries(QProgressDialog* progress);
+
+    void restoreToTemplate();
 
     // ===== 状态查询 =====
     bool isValid() const { return m_dateFound; }

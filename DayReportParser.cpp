@@ -6,6 +6,7 @@
 #include <QDate>
 #include <QTime>
 #include <stdexcept> 
+#include <QProgressDialog>
 
 DayReportParser::DayReportParser(ReportDataModel* model, QObject* parent)
     : QObject(parent)
@@ -175,48 +176,44 @@ void DayReportParser::parseRow(int row)
     }
 }
 
-bool DayReportParser::executeQueries()
+bool DayReportParser::executeQueries(QProgressDialog* progress)
 {
     if (m_queryTasks.isEmpty()) {
         qWarning() << "没有待查询的任务";
-        return false;
+        return true; // 没有任务也算成功完成
     }
 
     qDebug() << "========== 开始执行查询 ==========";
-    qDebug() << "待查询数量:" << m_queryTasks.size();
-
     int successCount = 0;
     int failCount = 0;
     int total = m_queryTasks.size();
 
     for (int i = 0; i < total; ++i) {
+        // 【核心修正】在每次循环开始时检查是否已取消
+        if (progress && progress->wasCanceled()) {
+            qDebug() << "查询被用户取消。";
+            return false; // 返回 false 表示被取消
+        }
+
         const QueryTask& task = m_queryTasks[i];
 
-        qDebug() << QString("[%1/%2] 查询: %3")
-            .arg(i + 1).arg(total).arg(task.queryPath);
+        // 更新进度条文本
+        if (progress) {
+            progress->setLabelText(QString("正在查询: %1/%2").arg(i + 1).arg(total));
+        }
 
         try {
             QVariant result = querySinglePoint(task.queryPath);
-
-            // 更新单元格
             task.cell->value = result;
             task.cell->queryExecuted = true;
             task.cell->querySuccess = true;
-
             successCount++;
-
-            qDebug() << QString(" 成功: 行%1列%2 = %3")
-                .arg(task.row).arg(task.col).arg(result.toString());
         }
         catch (const std::exception& e) {
-            qWarning() << QString("失败: 行%1列%2 - %3")
-                .arg(task.row).arg(task.col).arg(e.what());
-
-            // 查询失败，显示 ERROR
+            qWarning() << QString("失败: 行%1列%2 - %3").arg(task.row).arg(task.col).arg(e.what());
             task.cell->value = "ERROR";
             task.cell->queryExecuted = true;
             task.cell->querySuccess = false;
-
             failCount++;
         }
 
@@ -226,13 +223,27 @@ bool DayReportParser::executeQueries()
     qDebug() << "========================================";
     qDebug() << QString("查询完成: 成功 %1, 失败 %2").arg(successCount).arg(failCount);
 
+    emit queryCompleted(successCount, failCount);
+
     // 通知模型刷新显示
     m_model->notifyDataChanged();
 
-    emit queryCompleted(successCount, failCount);
-
-    return (failCount == 0);
+    return true; // 返回 true 表示正常完成
 }
+
+void DayReportParser::restoreToTemplate()
+{
+    qDebug() << "恢复到模板初始状态...";
+    for (const auto& task : m_queryTasks) {
+        if (task.cell) {
+            // 将单元格的值恢复为其原始标记文本
+            task.cell->value = task.cell->originalMarker;
+            task.cell->queryExecuted = false;
+            task.cell->querySuccess = false;
+        }
+    }
+}
+
 
 QVariant DayReportParser::querySinglePoint(const QString& queryPath)
 {

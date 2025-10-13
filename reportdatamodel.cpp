@@ -1,14 +1,6 @@
 ﻿#include "reportdatamodel.h"
 #include "formulaengine.h"
 #include "excelhandler.h" // 用于文件操作
-#include "UniversalQueryEngine.h"
-#include "DayReportParser.h"
-// QXlsx相关（检查是否已包含）
-#include "xlsxdocument.h"      // 用于 QXlsx::Document
-#include "xlsxcellrange.h"     // 用于 QXlsx::CellRange
-#include "xlsxworksheet.h"     // 用于 QXlsx::Worksheet
-#include "xlsxformat.h"        // 用于 QXlsx::Format
-
 #include <QColor>
 #include <QFont>
 #include <QPoint>
@@ -24,6 +16,14 @@
 #include <cmath>               // 用于 std::isnan, std::isinf
 #include <QMessageBox>
 
+#include "UniversalQueryEngine.h"
+#include "DayReportParser.h"
+// QXlsx相关（检查是否已包含）
+#include "xlsxdocument.h"      // 用于 QXlsx::Document
+#include "xlsxcellrange.h"     // 用于 QXlsx::CellRange
+#include "xlsxworksheet.h"     // 用于 QXlsx::Worksheet
+#include "xlsxformat.h"        // 用于 QXlsx::Format
+
 
 ReportDataModel::ReportDataModel(QObject* parent)
     : QAbstractTableModel(parent)
@@ -32,6 +32,7 @@ ReportDataModel::ReportDataModel(QObject* parent)
     , m_formulaEngine(new FormulaEngine(this))
     , m_reportType(NORMAL_EXCEL) // 默认是普通Excel
     , m_dayParser(nullptr)
+    , m_dataRefreshed(false)
 {
 }
 
@@ -43,8 +44,9 @@ ReportDataModel::~ReportDataModel()
 // ===== 新增：统一的模板加载入口 =====
 bool ReportDataModel::loadReportTemplate(const QString& fileName)
 {
-    // 1. 清理旧状态
+    // 1. 清理旧状态，并将刷新标记重置为 false
     clearAllCells();
+    m_dataRefreshed = false;
 
     // 2. 加载基础Excel数据
     if (!loadFromExcelFile(fileName)) {
@@ -60,8 +62,9 @@ bool ReportDataModel::loadReportTemplate(const QString& fileName)
         m_reportType = DAY_REPORT;
         qDebug() << "检测到日报模板，开始解析...";
         m_dayParser = new DayReportParser(this, this);
+        // scanAndParse 会识别模板中的标记
         if (!m_dayParser->scanAndParse()) {
-            // 解析失败，重置状态
+            // 如果解析失败（例如缺少#Date），清理并报错
             clearAllCells();
             return false;
         }
@@ -69,40 +72,78 @@ bool ReportDataModel::loadReportTemplate(const QString& fileName)
     else if (baseName.startsWith("##Month_", Qt::CaseInsensitive)) {
         m_reportType = MONTH_REPORT;
         qDebug() << "检测到月报模板 (功能待实现)...";
-        // 此处未来可以创建月报解析器
-        // m_monthParser = new MonthReportParser(this, this);
-        // if (!m_monthParser->scanAndParse()) ...
+        // 预留月报解析器逻辑
     }
     else {
         m_reportType = NORMAL_EXCEL;
-        qDebug() << "加载普通Excel文件，解析##绑定和公式...";
-        // 对于普通Excel，加载后直接解析##绑定和公式
+        qDebug() << "加载普通Excel文件。";
+        // 【核心修正】
+        // 对于普通Excel，在加载阶段我们只识别 ## 绑定，不计算公式。
+        // 公式计算将在用户点击“刷新数据”时与数据绑定一起刷新。
         resolveDataBindings();
-        recalculateAllFormulas();
+        // recalculateAllFormulas(); // <--- 已删除此行
     }
 
+    // 无论加载何种类型，都通知视图进行一次初始显示
+    notifyDataChanged();
     return true;
 }
 
-// ===== 新增：统一的数据刷新入口 =====
-bool ReportDataModel::refreshReportData()
+
+void ReportDataModel::recalculateAllFormulas()
 {
+    qDebug() << "开始批量重新计算所有公式...";
+    for (auto it = m_cells.constBegin(); it != m_cells.constEnd(); ++it) {
+        if (it.value() && it.value()->hasFormula) {
+            const QPoint& pos = it.key();
+            calculateFormula(pos.x(), pos.y());
+        }
+    }
+    // 计算完成后，通知整个视图刷新
+    notifyDataChanged();
+    qDebug() << "公式批量计算完成。";
+}
+
+// ===== 新增：统一的数据刷新入口 =====
+bool ReportDataModel::refreshReportData(QProgressDialog* progress)
+{
+    bool completedSuccessfully = false;
+
     switch (m_reportType) {
     case DAY_REPORT:
         if (m_dayParser) {
-            return m_dayParser->executeQueries();
+            // 先执行数据查询
+            completedSuccessfully = m_dayParser->executeQueries(progress);
+
+            // 【核心修改】如果查询没有被取消，则立即重新计算所有公式
+            if (completedSuccessfully) {
+                recalculateAllFormulas();
+                m_dataRefreshed = true;
+            }
         }
         break;
+
     case MONTH_REPORT:
         qDebug() << "月报刷新功能待实现";
-        // if (m_monthParser) return m_monthParser->executeQueries();
         break;
+
     case NORMAL_EXCEL:
         qDebug() << "普通Excel模式，执行##绑定刷新";
         resolveDataBindings();
+        recalculateAllFormulas(); // 普通模式刷新后也应重算公式
+        m_dataRefreshed = true;
+        completedSuccessfully = true;
         break;
     }
-    return false;
+    return completedSuccessfully;
+}
+
+void ReportDataModel::restoreToTemplate()
+{
+    if (m_reportType == DAY_REPORT && m_dayParser) {
+        m_dayParser->restoreToTemplate();
+        notifyDataChanged(); // 通知视图刷新
+    }
 }
 
 ReportDataModel::ReportType ReportDataModel::getReportType() const {
@@ -197,7 +238,7 @@ QVariant ReportDataModel::data(const QModelIndex& index, int role) const
 
     switch (role) {
     case Qt::DisplayRole:
-        return cell->displayText();
+        return cell->displayText(m_dataRefreshed);
     case Qt::EditRole:
         return cell->editText();
     case Qt::BackgroundRole:
@@ -600,6 +641,7 @@ void ReportDataModel::clearAllCells()
 
     m_reportType = NORMAL_EXCEL;
     m_reportName.clear();
+    m_dataRefreshed = false;
     endResetModel();
 }
 
@@ -625,18 +667,6 @@ void ReportDataModel::updateModelSize(int newRowCount, int newColCount)
 const QHash<QPoint, CellData*>& ReportDataModel::getAllCells() const
 {
     return m_cells;
-}
-
-void ReportDataModel::recalculateAllFormulas()
-{
-    for (auto it = m_cells.constBegin(); it != m_cells.constEnd(); ++it) {
-        if (it.value() && it.value()->hasFormula) {
-            const QPoint& pos = it.key();
-            calculateFormula(pos.x(), pos.y());
-        }
-    }
-    // 计算完成后，通知视图全局刷新数据
-    emit dataChanged(index(0, 0), index(m_maxRow - 1, m_maxCol - 1));
 }
 
 // --- 工具和私有方法实现 ---

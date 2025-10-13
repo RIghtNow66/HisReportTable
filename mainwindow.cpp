@@ -634,7 +634,6 @@ void MainWindow::applyRowColumnSizes()
 
 void MainWindow::onRefreshData()
 {
-    // =====【已修正】使用新的类型检查和统一的刷新接口 =====
     ReportDataModel::ReportType type = m_dataModel->getReportType();
 
     if (type == ReportDataModel::DAY_REPORT) {
@@ -644,7 +643,6 @@ void MainWindow::onRefreshData()
             QMessageBox::warning(this, "错误", "日报解析器未初始化或模板无效！");
             return;
         }
-
         int queryCount = parser->getPendingQueryCount();
         if (queryCount == 0) {
             QMessageBox::information(this, "提示", "模板中没有找到需要查询的数据标记 (#d#)。");
@@ -653,41 +651,40 @@ void MainWindow::onRefreshData()
 
         auto reply = QMessageBox::question(this, "确认查询",
             QString("即将查询 %1 个数据点，是否继续？\n\n基准日期: %2")
-            .arg(queryCount)
-            .arg(parser->getBaseDate()),
+            .arg(queryCount).arg(parser->getBaseDate()),
             QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes);
-
         if (reply == QMessageBox::No) return;
 
+        // 1. 创建进度对话框
         QProgressDialog progress("正在查询数据...", "取消", 0, queryCount, this);
         progress.setWindowModality(Qt::WindowModal);
-        progress.setMinimumDuration(0);
+        progress.setMinimumDuration(500); // 0.5秒后才显示，避免闪烁
 
+        // 2. 连接进度信号到进度条的 setValue
         connect(parser, &DayReportParser::queryProgress, &progress, &QProgressDialog::setValue);
-        connect(parser, &DayReportParser::queryCompleted, this,
-            [=, &progress](int successCount, int failCount) {
-                progress.setValue(queryCount);
-                if (failCount == 0) {
-                    QMessageBox::information(this, "完成", QString("查询完成！\n成功: %1 个").arg(successCount));
-                }
-                else {
-                    QMessageBox::warning(this, "部分失败", QString("查询完成，但有部分失败。\n\n成功: %1 个\n失败: %2 个\n\n失败的单元格已用红色背景标出。").arg(successCount).arg(failCount));
-                }
-            });
 
-        progress.show();
-        // 调用统一的刷新函数
-        m_dataModel->refreshReportData();
+        // 3. 执行查询，并传入 progress 指针
+        bool completed = m_dataModel->refreshReportData(&progress);
+
+        // 4. 根据查询结果和取消状态进行处理
+        if (completed) {
+            // 正常完成，可以弹窗提示成功
+            QMessageBox::information(this, "完成", "数据刷新完成！");
+        }
+        else {
+            // 被取消了
+            QMessageBox::warning(this, "已取消", "数据刷新操作已被用户取消。");
+            m_dataModel->restoreToTemplate(); // 【核心】调用恢复函数
+        }
 
     }
     else {
-        // ========== 普通/实时模式：数据绑定刷新 ==========
+        // ... (普通/实时模式的逻辑保持不变)
         if (!m_dataModel->hasDataBindings()) {
             QMessageBox::information(this, "提示", "当前表格中没有实时数据绑定（##标记的单元格）。");
             return;
         }
-        // 调用统一的刷新函数
-        m_dataModel->refreshReportData();
+        m_dataModel->refreshReportData(nullptr); // 传递 nullptr
         QMessageBox::information(this, "完成", "实时数据已更新！");
     }
 }

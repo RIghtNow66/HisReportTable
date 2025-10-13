@@ -20,6 +20,7 @@ inline uint qHash(const QPoint& key, uint seed = 0) noexcept
 
 class FormulaEngine;
 class DayReportParser;
+class QProgressDialog;
 
 class ReportDataModel : public QAbstractTableModel
 {
@@ -36,7 +37,9 @@ public:
     ~ReportDataModel();
 
     bool loadReportTemplate(const QString& fileName); // 替代 loadFromExcel 和 loadDayReport
-    bool refreshReportData();
+    bool refreshReportData(QProgressDialog* progress); // 修改签名
+    void restoreToTemplate(); // 新增函数
+
     ReportType getReportType() const;
     DayReportParser* getDayParser() const; // 仅用于日报
     void notifyDataChanged();
@@ -94,7 +97,6 @@ signals:
     void cellChanged(int row, int col);
 
 private:
-
     bool loadFromExcelFile(const QString& fileName);
 
     QHash<QPoint, CellData*> m_cells;        // 改为CellData*
@@ -111,6 +113,8 @@ private:
     ReportType m_reportType;
     DayReportParser* m_dayParser;
     // 预留: MonthReportParser* m_monthParser;
+
+    bool m_dataRefreshed;
 };
 
 #endif // REPORTDATAMODEL_H
