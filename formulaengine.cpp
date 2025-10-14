@@ -268,6 +268,16 @@ QVariant FormulaEngine::getCellValue(const QString& cellRef, ReportDataModel* mo
         return QVariant(0.0);
     }
 
+    if (cell->hasFormula && cell->formulaCalculated) {
+        // 公式已计算，value 是数值结果
+        return cell->value;
+    }
+    else if (cell->hasFormula && !cell->formulaCalculated) {
+        // 公式未计算，返回 0（或者触发递归计算，但可能导致循环依赖）
+        qWarning() << "引用了未计算的公式单元格:" << cellRef;
+        return QVariant(0.0);
+    }
+
     return cell->value;
 }
 

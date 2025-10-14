@@ -89,28 +89,42 @@ bool ReportDataModel::loadReportTemplate(const QString& fileName)
 void ReportDataModel::recalculateAllFormulas()
 {
     qDebug() << "开始增量计算公式...";
-    int calculatedCount = 0;
-    int skippedCount = 0;
 
-    for (auto it = m_cells.constBegin(); it != m_cells.constEnd(); ++it) {
-        CellData* cell = it.value();
-        if (cell && cell->hasFormula) {
-            const QPoint& pos = it.key();
+    // ===== 【修改】按依赖关系排序计算 =====
+    // 简单策略：多次遍历，直到没有新计算的公式
+    int maxIterations = 10;  // 防止循环依赖导致死循环
+    int iteration = 0;
 
-            // ===== 【核心逻辑】只计算未计算过的公式 =====
-            if (cell->formulaCalculated) {
-                skippedCount++;
-                continue;  // 跳过已计算的公式
+    while (iteration < maxIterations) {
+        int calculatedCount = 0;
+        int skippedCount = 0;
+        bool hasProgress = false;
+
+        for (auto it = m_cells.constBegin(); it != m_cells.constEnd(); ++it) {
+            CellData* cell = it.value();
+            if (cell && cell->hasFormula) {
+                if (cell->formulaCalculated) {
+                    skippedCount++;
+                    continue;
+                }
+
+                const QPoint& pos = it.key();
+                calculateFormula(pos.x(), pos.y());
+                calculatedCount++;
+                hasProgress = true;
             }
-            // ===== 【核心逻辑结束】 =====
-
-            calculateFormula(pos.x(), pos.y());
-            calculatedCount++;
         }
-    }
 
-    qDebug() << QString("公式计算完成: 计算 %1 个, 跳过 %2 个")
-        .arg(calculatedCount).arg(skippedCount);
+        qDebug() << QString("第 %1 轮计算: 计算 %2 个, 跳过 %3 个")
+            .arg(iteration + 1).arg(calculatedCount).arg(skippedCount);
+
+        // 如果这轮没有任何进展，说明有循环依赖或所有公式都已计算
+        if (!hasProgress) {
+            break;
+        }
+
+        iteration++;
+    }
 
     notifyDataChanged();
 }
@@ -118,33 +132,138 @@ void ReportDataModel::recalculateAllFormulas()
 // ===== 新增：统一的数据刷新入口 =====
 bool ReportDataModel::refreshReportData(QProgressDialog* progress)
 {
-    bool completedSuccessfully = false;
+    // ===== 【步骤1】检测变化类型 =====
+    ChangeType changeType = detectChanges();
 
-    switch (m_reportType) {
-    case DAY_REPORT:
-        if (m_dayParser) {
-            // 先执行数据查询
-            completedSuccessfully = m_dayParser->executeQueries(progress);
+    QString changeMsg;
+    bool needQuery = false;  // 是否需要查询数据
 
-            // ===== 如果查询没有被取消，则立即重新计算所有公式 =====
-            if (completedSuccessfully) {
-                qDebug() << "数据查询完成，开始计算延迟公式...";
-                recalculateAllFormulas();
+    switch (changeType) {
+    case NO_CHANGE:
+        changeMsg = "数据已是最新，无需刷新。";
+        QMessageBox::information(nullptr, "无需刷新", changeMsg);
+        saveRefreshSnapshot();  // 确保标记首次刷新完成
+        return true;
+
+    case FORMULA_ONLY: {
+        int newFormulaCount = 0;
+        for (auto it = m_cells.constBegin(); it != m_cells.constEnd(); ++it) {
+            if (it.value() && it.value()->hasFormula && !it.value()->formulaCalculated) {
+                newFormulaCount++;
             }
         }
-        break;
-
-    case MONTH_REPORT:
-        qDebug() << "月报刷新功能待实现";
-        break;
-
-    case NORMAL_EXCEL:
-        resolveDataBindings();
-        // ===== 刷新数据绑定后，计算所有公式 =====
-        recalculateAllFormulas();
-        completedSuccessfully = true;
+        changeMsg = QString("检测到 %1 个新增公式，是否计算？\n\n注意：不会重新查询数据。")
+            .arg(newFormulaCount);
+        needQuery = false;  // 【关键】只有公式变化，不需要查询
         break;
     }
+
+    case BINDING_ONLY: {
+        // 对于日报模式，绑定是 #d# 标记
+        int newMarkerCount = 0;
+        if (m_reportType == DAY_REPORT && m_dayParser) {
+            // 计算新增的 #d# 标记数量
+            for (auto it = m_cells.constBegin(); it != m_cells.constEnd(); ++it) {
+                const CellData* cell = it.value();
+                if (cell && cell->cellType == CellData::DataMarker && !cell->queryExecuted) {
+                    newMarkerCount++;
+                }
+            }
+        }
+        else {
+            // 普通模式：计算新增 ## 绑定
+            QList<QString> newBindings = getNewBindings();
+            newMarkerCount = newBindings.size();
+        }
+
+        changeMsg = QString("检测到 %1 个新增数据标记，是否查询？\n\n将查询新数据并重新计算所有公式。")
+            .arg(newMarkerCount);
+        needQuery = true;  // 需要查询
+        break;
+    }
+
+    case MIXED_CHANGE: {
+        if (m_isFirstRefresh) {
+            // 首次刷新：静默执行
+            needQuery = true;
+        }
+        else {
+            // 后续刷新：弹确认框
+            int newFormulaCount = 0;
+            for (auto it = m_cells.constBegin(); it != m_cells.constEnd(); ++it) {
+                if (it.value() && it.value()->hasFormula && !it.value()->formulaCalculated) {
+                    newFormulaCount++;
+                }
+            }
+
+            int newDataCount = 0;
+            if (m_reportType == DAY_REPORT) {
+                // 统计新增的 #d# 标记
+                for (auto it = m_cells.constBegin(); it != m_cells.constEnd(); ++it) {
+                    const CellData* cell = it.value();
+                    if (cell && cell->cellType == CellData::DataMarker && !cell->queryExecuted) {
+                        newDataCount++;
+                    }
+                }
+            }
+            else {
+                newDataCount = getNewBindings().size();
+            }
+
+            changeMsg = QString("检测到数据变更：\n"
+                "• 新增数据标记: %1 个\n"
+                "• 新增公式: %2 个\n\n"
+                "是否执行完整刷新？")
+                .arg(newDataCount)
+                .arg(newFormulaCount);
+            needQuery = true;
+        }
+        break;
+    }
+    }
+
+    // ===== 【步骤2】用户确认（首次刷新跳过） =====
+    if (!m_isFirstRefresh && !changeMsg.isEmpty()) {
+        auto reply = QMessageBox::question(nullptr, "确认刷新", changeMsg,
+            QMessageBox::Yes | QMessageBox::No,
+            QMessageBox::Yes);
+        if (reply == QMessageBox::No) {
+            return false;
+        }
+    }
+
+    // ===== 【步骤3】执行刷新操作 =====
+    bool completedSuccessfully = false;
+
+    // 【关键修改】根据 needQuery 决定是否查询
+    if (needQuery) {
+        // 需要查询数据
+        if (m_reportType == DAY_REPORT && m_dayParser) {
+            completedSuccessfully = m_dayParser->executeQueries(progress);
+        }
+        else if (m_reportType == NORMAL_EXCEL) {
+            if (changeType == BINDING_ONLY) {
+                QList<QString> newBindings = getNewBindings();
+                refreshBindingsOnly(newBindings);
+            }
+            else {
+                resolveDataBindings();
+            }
+            completedSuccessfully = true;
+        }
+    }
+    else {
+        // 不需要查询，直接标记为成功
+        completedSuccessfully = true;
+    }
+
+    // 【关键修改】无论是否查询，都计算公式
+    if (completedSuccessfully) {
+        qDebug() << "开始计算公式...";
+        recalculateAllFormulas();
+        saveRefreshSnapshot();  // 保存快照
+    }
+
     return completedSuccessfully;
 }
 
@@ -152,16 +271,24 @@ void ReportDataModel::restoreToTemplate()
 {
     if (m_reportType == DAY_REPORT && m_dayParser) {
         m_dayParser->restoreToTemplate();
-        notifyDataChanged(); // 通知视图刷新
     }
-	// 对于普通Excel，恢复公式单元格显示公式文本
+
+    // 对于普通Excel，恢复公式单元格显示公式文本
     for (auto it = m_cells.begin(); it != m_cells.end(); ++it) {
         CellData* cell = it.value();
         if (cell && cell->hasFormula) {
-            cell->formulaCalculated = false;  // 重置为未计算
-            cell->value = cell->formula;       // 恢复显示公式文本
+            cell->formulaCalculated = false;
+            cell->value = cell->formula;
         }
     }
+
+    // ===== 【新增】清空快照，下次刷新会被视为首次刷新 =====
+    m_lastSnapshot.bindingKeys.clear();
+    m_lastSnapshot.formulaCells.clear();
+    m_lastSnapshot.dataMarkerCells.clear();
+    m_isFirstRefresh = true;
+
+    notifyDataChanged();
 }
 
 ReportDataModel::ReportType ReportDataModel::getReportType() const {
@@ -654,15 +781,21 @@ void ReportDataModel::clearAllCells()
     m_cells.clear();
     clearSizes();
 
-    // 清理所有解析器
     delete m_dayParser;
     m_dayParser = nullptr;
-    // delete m_monthParser; m_monthParser = nullptr;
 
     m_reportType = NORMAL_EXCEL;
     m_reportName.clear();
+
+    // ===== 【新增】清空快照 =====
+    m_lastSnapshot.bindingKeys.clear();
+    m_lastSnapshot.formulaCells.clear();
+    m_lastSnapshot.dataMarkerCells.clear();
+    m_isFirstRefresh = true;
+
     endResetModel();
 }
+
 
 
 void ReportDataModel::addCellDirect(int row, int col, CellData* cell)
@@ -780,3 +913,141 @@ void ReportDataModel::clearSizes()
     m_rowHeights.clear();
     m_columnWidths.clear();
 }
+
+ReportDataModel::ChangeType ReportDataModel::detectChanges()
+{
+    // 获取当前状态
+    QSet<QString> currentBindings = getCurrentBindings();
+    QSet<QPoint> currentFormulas = getCurrentFormulas();
+
+    QSet<QPoint> currentDataMarkers;
+    for (auto it = m_cells.constBegin(); it != m_cells.constEnd(); ++it) {
+        const CellData* cell = it.value();
+        if (cell && cell->cellType == CellData::DataMarker) {
+            currentDataMarkers.insert(it.key());
+        }
+    }
+
+    // 如果是首次刷新，返回混合变化（需要完整刷新）
+    if (m_lastSnapshot.isEmpty()) {
+        return MIXED_CHANGE;
+    }
+
+    // 检测绑定变化
+    bool hasNewBindings = false;
+    for (const QString& binding : currentBindings) {
+        if (!m_lastSnapshot.bindingKeys.contains(binding)) {
+            hasNewBindings = true;
+            break;
+        }
+    }
+    
+    // 检测 #d# 标记变化
+    bool hasNewDataMarkers = false;
+    for (const QPoint& pos : currentDataMarkers) {
+        if (!m_lastSnapshot.dataMarkerCells.contains(pos)) {
+            hasNewDataMarkers = true;
+            break;
+        }
+    }
+
+    // 检测公式变化
+    bool hasNewFormulas = false;
+    for (const QPoint& pos : currentFormulas) {
+        const CellData* cell = getCell(pos.x(), pos.y());
+        if (cell && cell->hasFormula && !cell->formulaCalculated) {
+            hasNewFormulas = true;
+            break;
+        }
+    }
+
+    // 判断变化类型
+    bool hasDataChange = hasNewBindings || hasNewDataMarkers;
+
+    if (!hasDataChange && !hasNewFormulas) {
+        return NO_CHANGE;
+    }
+    else if (hasNewFormulas && !hasDataChange) {
+        return FORMULA_ONLY;
+    }
+    else if (hasDataChange && !hasNewFormulas) {
+        return BINDING_ONLY;  // 包括 ## 绑定和 #d# 标记
+    }
+    else {
+        return MIXED_CHANGE;
+    }
+}
+
+void ReportDataModel::saveRefreshSnapshot()
+{
+    m_lastSnapshot.bindingKeys = getCurrentBindings();
+    m_lastSnapshot.formulaCells = getCurrentFormulas();
+    m_lastSnapshot.dataMarkerCells.clear();
+    for (auto it = m_cells.constBegin(); it != m_cells.constEnd(); ++it) {
+        const CellData* cell = it.value();
+        if (cell && cell->cellType == CellData::DataMarker) {
+            m_lastSnapshot.dataMarkerCells.insert(it.key());
+        }
+    }
+    m_isFirstRefresh = false;
+}
+
+QSet<QString> ReportDataModel::getCurrentBindings() const
+{
+    QSet<QString> bindings;
+    for (auto it = m_cells.constBegin(); it != m_cells.constEnd(); ++it) {
+        const CellData* cell = it.value();
+        if (cell && cell->isDataBinding) {
+            bindings.insert(cell->bindingKey);
+        }
+    }
+    return bindings;
+}
+
+QSet<QPoint> ReportDataModel::getCurrentFormulas() const
+{
+    QSet<QPoint> formulas;
+    for (auto it = m_cells.constBegin(); it != m_cells.constEnd(); ++it) {
+        if (it.value() && it.value()->hasFormula) {
+            formulas.insert(it.key());
+        }
+    }
+    return formulas;
+}
+
+QList<QString> ReportDataModel::getNewBindings() const
+{
+    QList<QString> newBindings;
+    QSet<QString> currentBindings = getCurrentBindings();
+
+    for (const QString& binding : currentBindings) {
+        if (!m_lastSnapshot.bindingKeys.contains(binding)) {
+            newBindings.append(binding);
+        }
+    }
+    return newBindings;
+}
+
+void ReportDataModel::refreshBindingsOnly(const QList<QString>& newBindings)
+{
+    if (newBindings.isEmpty()) {
+        return;
+    }
+
+    qDebug() << "增量查询绑定数据，数量:" << newBindings.size();
+
+    // 查询新增的绑定数据
+    QHash<QString, QVariant> resolvedData =
+        UniversalQueryEngine::instance().queryValuesForBindingKeys(newBindings);
+
+    // 更新单元格的值
+    for (auto it = m_cells.begin(); it != m_cells.end(); ++it) {
+        CellData* cell = it.value();
+        if (cell && cell->isDataBinding && resolvedData.contains(cell->bindingKey)) {
+            cell->value = resolvedData[cell->bindingKey];
+        }
+    }
+
+    emit dataChanged(index(0, 0), index(m_maxRow - 1, m_maxCol - 1));
+}
+

@@ -27,11 +27,23 @@ class ReportDataModel : public QAbstractTableModel
     Q_OBJECT
 
 public:
+    enum ChangeType {
+        NO_CHANGE,           // 无变化
+        FORMULA_ONLY,        // 只有公式变化
+        BINDING_ONLY,        // 只有绑定变化
+        MIXED_CHANGE         // 混合变化
+    };
+
+    ChangeType detectChanges();  // 检测变化类型
+    void saveRefreshSnapshot();  // 保存刷新快照
+    bool isFirstRefresh() const { return m_isFirstRefresh; }
+
     enum ReportType {
         NORMAL_EXCEL, // 普通Excel或未识别
         DAY_REPORT,   // 日报
         MONTH_REPORT  // 为月报预留
     };
+
 
     explicit ReportDataModel(QObject* parent = nullptr);
     ~ReportDataModel();
@@ -97,6 +109,12 @@ signals:
     void cellChanged(int row, int col);
 
 private:
+    QSet<QString> getCurrentBindings() const;     // 获取当前所有绑定标记
+    QSet<QPoint> getCurrentFormulas() const;      // 获取当前所有公式位置
+    QList<QString> getNewBindings() const;        // 获取新增的绑定标记
+    void refreshBindingsOnly(const QList<QString>& newBindings);  // 只刷新指定绑定
+
+private:
     bool loadFromExcelFile(const QString& fileName);
 
     QHash<QPoint, CellData*> m_cells;        // 改为CellData*
@@ -113,6 +131,17 @@ private:
     ReportType m_reportType;
     DayReportParser* m_dayParser;
     // 预留: MonthReportParser* m_monthParser;
+
+    struct RefreshSnapshot {
+        QSet<QString> bindingKeys;     // 上次刷新时的绑定标记集合
+        QSet<QPoint> formulaCells;     // 上次刷新时的公式单元格位置
+        QSet<QPoint> dataMarkerCells;
+        bool isEmpty() const { return bindingKeys.isEmpty() && formulaCells.isEmpty(); dataMarkerCells.isEmpty();
+        }
+    };
+
+    RefreshSnapshot m_lastSnapshot;    // 上次刷新的快照
+    bool m_isFirstRefresh = true;      // 是否首次刷新
 
 };
 
