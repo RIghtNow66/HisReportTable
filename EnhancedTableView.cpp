@@ -30,7 +30,6 @@ void EnhancedTableView::drawBorders(QPainter* painter)
 
     painter->save();
 
-    // 用于跟踪已经绘制过的合并单元格的左上角坐标
     QSet<QPoint> drawnSpans;
 
     QRect viewportRect = viewport()->rect();
@@ -49,53 +48,78 @@ void EnhancedTableView::drawBorders(QPainter* painter)
             const CellData* cell = reportModel->getCell(row, col);
             if (!cell) continue;
 
-            // 默认情况下，单元格的“主单元格”就是它自己
             QPoint masterCellPos(row, col);
 
-            // 如果当前单元格是合并单元格的一部分，找到它的左上角主单元格
             if (cell->mergedRange.isMerged()) {
                 masterCellPos.setX(cell->mergedRange.startRow);
                 masterCellPos.setY(cell->mergedRange.startCol);
             }
 
-            // 如果这个主单元格（或它所属的合并区域）已经绘制过了，就跳过
             if (drawnSpans.contains(masterCellPos)) {
                 continue;
             }
 
-            // 获取主单元格的索引和它所占的完整矩形区域
             QModelIndex masterIndex = reportModel->index(masterCellPos.x(), masterCellPos.y());
             QRect cellRect = visualRect(masterIndex);
 
-            // 获取主单元格的样式来决定边框
             const CellData* masterCell = reportModel->getCell(masterCellPos.x(), masterCellPos.y());
             if (!masterCell) continue;
 
-            const RTCellBorder& border = masterCell->style.border;
+            // ========== 【核心修复】开始 ==========
+            // 对于合并单元格，分别获取四个边缘的边框信息
+            RTCellBorder topBorder, bottomBorder, leftBorder, rightBorder;
 
-            // 绘制这个区域的四个外边框
-            if (border.top != RTBorderStyle::None) {
-                QPen pen(border.topColor, static_cast<int>(border.top));
+            if (masterCell->mergedRange.isMerged()) {
+                // 合并单元格：从四个边缘单元格分别读取边框
+                int startRow = masterCell->mergedRange.startRow;
+                int endRow = masterCell->mergedRange.endRow;
+                int startCol = masterCell->mergedRange.startCol;
+                int endCol = masterCell->mergedRange.endCol;
+
+                // 上边框：取第一行的上边框
+                const CellData* topCell = reportModel->getCell(startRow, startCol);
+                topBorder = topCell ? topCell->style.border : RTCellBorder();
+
+                // 下边框：取最后一行的下边框
+                const CellData* bottomCell = reportModel->getCell(endRow, startCol);
+                bottomBorder = bottomCell ? bottomCell->style.border : RTCellBorder();
+
+                // 左边框：取第一列的左边框
+                const CellData* leftCell = reportModel->getCell(startRow, startCol);
+                leftBorder = leftCell ? leftCell->style.border : RTCellBorder();
+
+                // 右边框：取最后一列的右边框（关键！）
+                const CellData* rightCell = reportModel->getCell(startRow, endCol);
+                rightBorder = rightCell ? rightCell->style.border : RTCellBorder();
+            }
+            else {
+                // 普通单元格：直接使用自己的边框
+                topBorder = bottomBorder = leftBorder = rightBorder = masterCell->style.border;
+            }
+
+            // 绘制四个边框（使用分别获取的边框信息）
+            if (topBorder.top != RTBorderStyle::None) {
+                QPen pen(topBorder.topColor, static_cast<int>(topBorder.top));
                 painter->setPen(pen);
                 painter->drawLine(cellRect.topLeft(), cellRect.topRight());
             }
-            if (border.bottom != RTBorderStyle::None) {
-                QPen pen(border.bottomColor, static_cast<int>(border.bottom));
+            if (bottomBorder.bottom != RTBorderStyle::None) {
+                QPen pen(bottomBorder.bottomColor, static_cast<int>(bottomBorder.bottom));
                 painter->setPen(pen);
                 painter->drawLine(cellRect.bottomLeft(), cellRect.bottomRight());
             }
-            if (border.left != RTBorderStyle::None) {
-                QPen pen(border.leftColor, static_cast<int>(border.left));
+            if (leftBorder.left != RTBorderStyle::None) {
+                QPen pen(leftBorder.leftColor, static_cast<int>(leftBorder.left));
                 painter->setPen(pen);
                 painter->drawLine(cellRect.topLeft(), cellRect.bottomLeft());
             }
-            if (border.right != RTBorderStyle::None) {
-                QPen pen(border.rightColor, static_cast<int>(border.right));
+            if (rightBorder.right != RTBorderStyle::None) {
+                QPen pen(rightBorder.rightColor, static_cast<int>(rightBorder.right));
                 painter->setPen(pen);
                 painter->drawLine(cellRect.topRight(), cellRect.bottomRight());
             }
+            // ========== 【核心修复】结束 ==========
 
-            // 如果这是一个合并区域，将它的主单元格加入“已绘制”集合
             if (masterCell->mergedRange.isMerged()) {
                 drawnSpans.insert(masterCellPos);
             }

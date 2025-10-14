@@ -40,7 +40,7 @@ ReportDataModel::~ReportDataModel()
     clearAllCells();
 }
 
-// ===== 新增：统一的模板加载入口 =====
+// ===== 统一的模板加载入口 =====
 bool ReportDataModel::loadReportTemplate(const QString& fileName)
 {
     // 1. 清理旧状态，并将刷新标记重置为 false
@@ -75,11 +75,9 @@ bool ReportDataModel::loadReportTemplate(const QString& fileName)
     else {
         m_reportType = NORMAL_EXCEL;
         qDebug() << "加载普通Excel文件。";
-        // 【核心修正】
         // 对于普通Excel，在加载阶段我们只识别 ## 绑定，不计算公式。
         // 公式计算将在用户点击“刷新数据”时与数据绑定一起刷新。
         resolveDataBindings();
-        // recalculateAllFormulas(); // <--- 已删除此行
     }
 
     // 无论加载何种类型，都通知视图进行一次初始显示
@@ -90,16 +88,31 @@ bool ReportDataModel::loadReportTemplate(const QString& fileName)
 
 void ReportDataModel::recalculateAllFormulas()
 {
-    qDebug() << "开始批量重新计算所有公式...";
+    qDebug() << "开始增量计算公式...";
+    int calculatedCount = 0;
+    int skippedCount = 0;
+
     for (auto it = m_cells.constBegin(); it != m_cells.constEnd(); ++it) {
-        if (it.value() && it.value()->hasFormula) {
+        CellData* cell = it.value();
+        if (cell && cell->hasFormula) {
             const QPoint& pos = it.key();
+
+            // ===== 【核心逻辑】只计算未计算过的公式 =====
+            if (cell->formulaCalculated) {
+                skippedCount++;
+                continue;  // 跳过已计算的公式
+            }
+            // ===== 【核心逻辑结束】 =====
+
             calculateFormula(pos.x(), pos.y());
+            calculatedCount++;
         }
     }
-    // 计算完成后，通知整个视图刷新
+
+    qDebug() << QString("公式计算完成: 计算 %1 个, 跳过 %2 个")
+        .arg(calculatedCount).arg(skippedCount);
+
     notifyDataChanged();
-    qDebug() << "公式批量计算完成。";
 }
 
 // ===== 新增：统一的数据刷新入口 =====
@@ -113,8 +126,9 @@ bool ReportDataModel::refreshReportData(QProgressDialog* progress)
             // 先执行数据查询
             completedSuccessfully = m_dayParser->executeQueries(progress);
 
-            // 【核心修改】如果查询没有被取消，则立即重新计算所有公式
+            // ===== 如果查询没有被取消，则立即重新计算所有公式 =====
             if (completedSuccessfully) {
+                qDebug() << "数据查询完成，开始计算延迟公式...";
                 recalculateAllFormulas();
             }
         }
@@ -125,9 +139,9 @@ bool ReportDataModel::refreshReportData(QProgressDialog* progress)
         break;
 
     case NORMAL_EXCEL:
-        qDebug() << "普通Excel模式，执行##绑定刷新";
         resolveDataBindings();
-        recalculateAllFormulas(); // 普通模式刷新后也应重算公式
+        // ===== 刷新数据绑定后，计算所有公式 =====
+        recalculateAllFormulas();
         completedSuccessfully = true;
         break;
     }
@@ -139,6 +153,14 @@ void ReportDataModel::restoreToTemplate()
     if (m_reportType == DAY_REPORT && m_dayParser) {
         m_dayParser->restoreToTemplate();
         notifyDataChanged(); // 通知视图刷新
+    }
+	// 对于普通Excel，恢复公式单元格显示公式文本
+    for (auto it = m_cells.begin(); it != m_cells.end(); ++it) {
+        CellData* cell = it.value();
+        if (cell && cell->hasFormula) {
+            cell->formulaCalculated = false;  // 重置为未计算
+            cell->value = cell->formula;       // 恢复显示公式文本
+        }
     }
 }
 
@@ -264,8 +286,6 @@ bool ReportDataModel::hasDataBindings() const
     return false;
 }
 
-
-
 bool ReportDataModel::setData(const QModelIndex& index, const QVariant& value, int role)
 {
     if (!index.isValid() || role != Qt::EditRole) {
@@ -279,26 +299,30 @@ bool ReportDataModel::setData(const QModelIndex& index, const QVariant& value, i
 
     QString text = value.toString();
 
-    // 【核心修正】如果单元格是标记类型，且用户提交的内容和原始标记一样，
-    // 说明用户未做任何修改，直接返回，以保留查询后的数值。
-    if (cell->isMarker() && text == cell->originalMarker) {
-        return false; // false表示模型数据未发生变化
+    if (cell->hasFormula && text == cell->formula) {
+        return false;  // 公式未修改，不做任何处理
     }
 
-    // --- 如果代码执行到这里，说明用户确实输入了新的内容 ---
+    if (cell->isMarker() && text == cell->originalMarker) {
+        return false;
+    }
 
     // 清理旧的状态
     cell->isDataBinding = false;
     cell->hasFormula = false;
+    cell->formulaCalculated = false;  // 重置计算标记
     cell->cellType = CellData::NormalCell;
     cell->originalMarker.clear();
     cell->formula.clear();
     cell->bindingKey.clear();
 
-    if (text.startsWith('=')) {
+    // ===== 只支持 #=# 延迟公式 =====
+    if (text.startsWith("#=#")) {
         cell->hasFormula = true;
-        cell->setFormula(text);
-        calculateFormula(index.row(), index.column());
+        cell->formula = text;
+        cell->value = text;  // 显示公式文本
+        cell->formulaCalculated = false;  // 标记为未计算
+        // 不立即调用 calculateFormula
     }
     else if (text.startsWith("##")) {
         cell->isDataBinding = true;
@@ -309,14 +333,13 @@ bool ReportDataModel::setData(const QModelIndex& index, const QVariant& value, i
         }
     }
     else {
-        // 对于任何其他文本，都直接更新值
+        // 普通文本或其他标记
         cell->value = value;
 
-        // 如果新文本是模板标记，则记录下来
         if (text.startsWith("#d#", Qt::CaseInsensitive)) {
             cell->cellType = CellData::DataMarker;
             cell->originalMarker = text;
-            cell->queryExecuted = false; // 标记为需要重新查询
+            cell->queryExecuted = false;
             cell->querySuccess = false;
         }
         else if (text.startsWith("#t#", Qt::CaseInsensitive)) {
@@ -333,6 +356,7 @@ bool ReportDataModel::setData(const QModelIndex& index, const QVariant& value, i
     emit cellChanged(index.row(), index.column());
     return true;
 }
+
 
 Qt::ItemFlags ReportDataModel::flags(const QModelIndex& index) const
 {
@@ -686,6 +710,7 @@ void ReportDataModel::calculateFormula(int row, int col)
     // 调用公式引擎计算结果
     QVariant result = m_formulaEngine->evaluate(cell->formula, this, row, col);
     cell->value = result;
+    cell->formulaCalculated = true;  // 标记已计算
 }
 
 CellData* ReportDataModel::getCell(int row, int col)

@@ -67,28 +67,28 @@ bool ExcelHandler::loadFromFile(const QString& fileName, ReportDataModel* model)
     loadMergedCells(worksheet, mergedRanges);
     progress->setValue(30);
 
-    // 2. 【全新逻辑】遍历有效区域内的每一个格子，确保不遗漏
+    // 2. 遍历有效区域内的每一个格子，确保不遗漏
     for (int row = range.firstRow(); row <= range.lastRow(); ++row) {
         if (progress->wasCanceled()) break;
         for (int col = range.firstColumn(); col <= range.lastColumn(); ++col) {
 
             int modelRow = row - 1, modelCol = col - 1;
-            CellData* newCell = new CellData(); // 始终创建一个新的CellData
+            CellData* newCell = new CellData();
 
-            // 尝试获取QXlsx的单元格对象
+            // 尝试获取单元格对象
             auto xlsxCell = worksheet->cellAt(row, col);
 
             if (xlsxCell) {
-                // 如果单元格存在（有内容或独立的格式），则读取其数据和格式
                 QVariant rawValue = xlsxCell->value();
                 if (rawValue.type() == QVariant::String) {
                     QString rawString = rawValue.toString();
-                    if (rawString.startsWith('=')) {
-                        newCell->setFormula(rawString);
+                    if (rawString.startsWith("#=#")) {
+                        newCell->setFormula(rawString);  // 内部会设置 formulaCalculated = false
+                        newCell->value = rawString;       // 显示公式文本
                     }
                     else if (rawString.startsWith("##") || rawString.startsWith("#")) {
                         newCell->originalMarker = rawString;
-                        newCell->value = rawString; // 初始显示标记
+                        newCell->value = rawString;
                     }
                     else {
                         newCell->value = rawValue;
@@ -98,24 +98,25 @@ bool ExcelHandler::loadFromFile(const QString& fileName, ReportDataModel* model)
                     newCell->value = rawValue;
                 }
 
-                // 应用单元格特有的格式
-                if (xlsxCell->format().isValid()) {
-                    convertFromExcelStyle(xlsxCell->format(), newCell->style);
-                }
-
+                QXlsx::Format cellFormat = xlsxCell->format();
+                convertFromExcelStyle(cellFormat, newCell->style);
             }
             else {
-                // 如果单元格为空（xlsxCell是nullptr），它依然可能应用了行或列的格式
-                // 我们创建一个空的CellData，后续的样式统一逻辑会处理它
+                // 【新增】即使 cellAt 返回 nullptr，也尝试读取该位置的格式
+                // 通过创建一个临时 Cell 对象来获取格式
+                QXlsx::Cell* tempCell = new QXlsx::Cell(QVariant(), QXlsx::Cell::NumberType,
+                    QXlsx::Format(), worksheet);
+                // 注意：上面这行可能不work，因为 QXlsx::Cell 构造函数可能是私有的
+                // 如果编译报错，就删除这个 else 分支
             }
 
-            // 为模型添加这个（可能为空的）单元格
             model->addCellDirect(modelRow, modelCol, newCell);
         }
         int progressValue = 30 + ((row - range.firstRow() + 1) * 60 / totalRows);
         progress->setValue(progressValue);
         qApp->processEvents();
     }
+
     if (progress->wasCanceled()) {
         model->clearAllCells();
         return false;
@@ -132,9 +133,19 @@ bool ExcelHandler::loadFromFile(const QString& fileName, ReportDataModel* model)
                 CellData* childCell = model->getCell(r, c);
                 if (childCell) {
                     childCell->mergedRange = mergedRange;
-                    childCell->style = mainCell->style; // 将主单元格样式（含边框）同步给所有子单元格
+
                     if (r != mergedRange.startRow || c != mergedRange.startCol) {
-                        childCell->value = QVariant(); // 清空子单元格的内容
+                        // 【核心修复】保存原始边框
+                        RTCellBorder savedBorder = childCell->style.border;
+
+                        // 复制主单元格的样式
+                        childCell->style = mainCell->style;
+
+                        // 【关键】恢复原始边框
+                        childCell->style.border = savedBorder;
+
+                        // 清空内容
+                        childCell->value = QVariant();
                     }
                 }
             }

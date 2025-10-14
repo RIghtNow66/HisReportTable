@@ -97,6 +97,8 @@ struct CellData {
     bool queryExecuted;                // 是否已执行查询
     bool querySuccess;                 // 查询是否成功
 
+    bool formulaCalculated = false;  // 标记公式是否已计算过
+
     // ===== 构造函数 =====
     CellData()
         : hasFormula(false)
@@ -126,20 +128,26 @@ struct CellData {
 
     // 设置公式
     void setFormula(const QString& formulaText) {
-        formula = formulaText.startsWith('=') ? formulaText.mid(1) : formulaText;
+        formula = formulaText;  // 直接保存，不做任何处理
         hasFormula = true;
     }
 
     // 获取显示文本
     QString displayText() const {
-        return value.toString();
+        if (cellType == DateMarker || cellType == TimeMarker) {
+            return value.toString();
+        }
+        if (hasFormula && !formulaCalculated) {
+            return formula;  // 未计算时显示公式文本
+        }
+        return value.toString();  // 已计算时显示结果值
     }
 
 
     // 获取编辑文本
     QString editText() const {
         if (hasFormula) {
-            return "=" + formula; // 编辑时总是显示公式
+            return formula; // 编辑时总是显示公式
         }
         if (!originalMarker.isEmpty()) {
             return originalMarker; // 日报标记编辑时显示原始标记

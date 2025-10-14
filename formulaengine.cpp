@@ -3,6 +3,7 @@
 #include <QRegularExpression>
 #include <QStack>
 #include <QQueue>
+#include <qDebug>
 
 FormulaEngine::FormulaEngine(QObject* parent) : QObject(parent)
 {
@@ -13,33 +14,42 @@ QVariant FormulaEngine::evaluate(const QString& formula, ReportDataModel* model,
     Q_UNUSED(currentRow)
         Q_UNUSED(currentCol)
 
-        if (!isFormula(formula))
-            return formula;
+    if (!isFormula(formula))
+        return formula;
 
-    QString expr = formula.mid(1).trimmed(); // 去掉 '='
+    // ===== 处理延迟公式 #=# =====
+    QString expr;
+    if (formula.startsWith("#=#")) {
+        expr = formula.mid(3).trimmed();  // 去掉 "#=#" 前缀
+    }
+    else if (formula.startsWith('=')) {
+        expr = formula.mid(1).trimmed();   // 去掉 "=" 前缀
+    }
+    else {
+        return formula;  // 既不是 = 也不是 #=#，返回原值
+    }
 
-    // 优先检查是否为函数调用
     QRegularExpression functionRegex(R"(^(SUM|MAX|MIN)\s*\([^)]+\)$)");
     QRegularExpressionMatch functionMatch = functionRegex.match(expr);
 
     if (functionMatch.hasMatch()) {
         // 处理函数
         if (expr.startsWith("SUM")) {
-            QRegularExpression sumRegex(R"(SUM\(([A-Z]+\d+:[A-Z]+\d+)\))");
+            QRegularExpression sumRegex(R"(SUM\s*\(([A-Z]+\d+:[A-Z]+\d+)\))");
             QRegularExpressionMatch match = sumRegex.match(expr);
             if (match.hasMatch()) {
                 return evaluateSum(match.captured(1), model);
             }
         }
         else if (expr.startsWith("MAX")) {
-            QRegularExpression maxRegex(R"(MAX\(([A-Z]+\d+:[A-Z]+\d+)\))");
+            QRegularExpression maxRegex(R"(MAX\s*\(([A-Z]+\d+:[A-Z]+\d+)\))");
             QRegularExpressionMatch match = maxRegex.match(expr);
             if (match.hasMatch()) {
                 return evaluateMax(match.captured(1), model);
             }
         }
         else if (expr.startsWith("MIN")) {
-            QRegularExpression minRegex(R"(MIN\(([A-Z]+\d+:[A-Z]+\d+)\))");
+            QRegularExpression minRegex(R"(MIN\s*\(([A-Z]+\d+:[A-Z]+\d+)\))");
             QRegularExpressionMatch match = minRegex.match(expr);
             if (match.hasMatch()) {
                 return evaluateMin(match.captured(1), model);
@@ -53,7 +63,7 @@ QVariant FormulaEngine::evaluate(const QString& formula, ReportDataModel* model,
 
 bool FormulaEngine::isFormula(const QString& text) const
 {
-	return !text.isEmpty() && text.startsWith('=');
+    return !text.isEmpty() && (text.startsWith('=') || text.startsWith("#=#"));
 }
 
 // 
@@ -77,7 +87,7 @@ QVariant FormulaEngine::evaluateSum(const QString& range, ReportDataModel* model
             }
         }
     }
-    return QVariant(sum);
+    return QString::number(sum, 'f', 2);
 }
 
 QVariant FormulaEngine::evaluateMax(const QString& range, ReportDataModel* model)
@@ -105,7 +115,7 @@ QVariant FormulaEngine::evaluateMax(const QString& range, ReportDataModel* model
             }
         }
     }
-    return hasValue ? QVariant(maxValue) : QVariant(0.0);
+    return hasValue ?  QString::number(maxValue, 'f', 2) : QVariant(0.0);
 }
 
 QVariant FormulaEngine::evaluateMin(const QString& range, ReportDataModel* model)
@@ -133,7 +143,7 @@ QVariant FormulaEngine::evaluateMin(const QString& range, ReportDataModel* model
             }
         }
     }
-    return hasValue ? QVariant(minValue) : QVariant(0.0);
+    return hasValue ? QString::number(minValue, 'f', 2) : QVariant(0.0);
 }
 
 
@@ -240,7 +250,7 @@ QVariant FormulaEngine::calculateArithmetic(const QString& expression)
     }
 
     if (numbers.size() == 1) {
-        return numbers.top();
+        return QString::number(numbers.top(), 'f', 2);
     }
 
     return QVariant("#ERROR!"); // 表达式错误
