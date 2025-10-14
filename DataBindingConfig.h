@@ -131,14 +131,10 @@ struct CellData {
     }
 
     // 获取显示文本
-    QString displayText(bool isDataRefreshed) const {
-        // 如果有公式，并且数据尚未刷新，则显示公式本身
-        if (hasFormula && !isDataRefreshed) {
-            return "=" + formula;
-        }
-        // 在其他所有情况下（无公式，或有公式且数据已刷新），显示计算后的值
+    QString displayText() const {
         return value.toString();
     }
+
 
     // 获取编辑文本
     QString editText() const {

@@ -114,7 +114,6 @@ private:
     DayReportParser* m_dayParser;
     // 预留: MonthReportParser* m_monthParser;
 
-    bool m_dataRefreshed;
 };
 
 #endif // REPORTDATAMODEL_H

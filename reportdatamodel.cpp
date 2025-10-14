@@ -32,7 +32,6 @@ ReportDataModel::ReportDataModel(QObject* parent)
     , m_formulaEngine(new FormulaEngine(this))
     , m_reportType(NORMAL_EXCEL) // 默认是普通Excel
     , m_dayParser(nullptr)
-    , m_dataRefreshed(false)
 {
 }
 
@@ -46,7 +45,6 @@ bool ReportDataModel::loadReportTemplate(const QString& fileName)
 {
     // 1. 清理旧状态，并将刷新标记重置为 false
     clearAllCells();
-    m_dataRefreshed = false;
 
     // 2. 加载基础Excel数据
     if (!loadFromExcelFile(fileName)) {
@@ -118,7 +116,6 @@ bool ReportDataModel::refreshReportData(QProgressDialog* progress)
             // 【核心修改】如果查询没有被取消，则立即重新计算所有公式
             if (completedSuccessfully) {
                 recalculateAllFormulas();
-                m_dataRefreshed = true;
             }
         }
         break;
@@ -131,7 +128,6 @@ bool ReportDataModel::refreshReportData(QProgressDialog* progress)
         qDebug() << "普通Excel模式，执行##绑定刷新";
         resolveDataBindings();
         recalculateAllFormulas(); // 普通模式刷新后也应重算公式
-        m_dataRefreshed = true;
         completedSuccessfully = true;
         break;
     }
@@ -238,7 +234,7 @@ QVariant ReportDataModel::data(const QModelIndex& index, int role) const
 
     switch (role) {
     case Qt::DisplayRole:
-        return cell->displayText(m_dataRefreshed);
+        return cell->displayText();
     case Qt::EditRole:
         return cell->editText();
     case Qt::BackgroundRole:
@@ -641,7 +637,6 @@ void ReportDataModel::clearAllCells()
 
     m_reportType = NORMAL_EXCEL;
     m_reportName.clear();
-    m_dataRefreshed = false;
     endResetModel();
 }
 
