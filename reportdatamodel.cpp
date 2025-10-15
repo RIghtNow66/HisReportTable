@@ -765,10 +765,10 @@ void ReportDataModel::resolveDataBindings()
     emit dataChanged(index(0, 0), index(m_maxRow - 1, m_maxCol - 1));
 }
 
-bool ReportDataModel::saveToExcel(const QString& fileName)
+bool ReportDataModel::saveToExcel(const QString& fileName, ExportMode mode)
 {
-    // 直接委托给ExcelHandler处理
-    return ExcelHandler::saveToFile(fileName, this);
+    return ExcelHandler::saveToFile(fileName, this,
+        mode == EXPORT_DATA ? ExcelHandler::EXPORT_DATA : ExcelHandler::EXPORT_TEMPLATE);
 }
 
 
@@ -810,12 +810,18 @@ void ReportDataModel::addCellDirect(int row, int col, CellData* cell)
 
 void ReportDataModel::updateModelSize(int newRowCount, int newColCount)
 {
-    // 更新内部行列数，保证最小尺寸
-    m_maxRow = qMax(100, newRowCount);
-    m_maxCol = qMax(26, newColCount);
-    // 注意：同样不调用begin/endResetModel，由调用方负责
-}
+    // 不强制扩展到100行26列，使用实际大小
+    m_maxRow = newRowCount > 0 ? newRowCount : 100;
+    m_maxCol = newColCount > 0 ? newColCount : 26;
 
+    // 确保行高列宽数组大小匹配实际数据
+    if (m_rowHeights.size() > m_maxRow) {
+        m_rowHeights.resize(m_maxRow);
+    }
+    if (m_columnWidths.size() > m_maxCol) {
+        m_columnWidths.resize(m_maxCol);
+    }
+}
 const QHash<QPoint, CellData*>& ReportDataModel::getAllCells() const
 {
     return m_cells;

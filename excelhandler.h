@@ -23,8 +23,14 @@ namespace QXlsx {
 class ExcelHandler
 {
 public:
+    enum ExportMode {
+        EXPORT_DATA,
+        EXPORT_TEMPLATE
+    };
+
     static bool loadFromFile(const QString& fileName, ReportDataModel* model);
-    static bool saveToFile(const QString& fileName, ReportDataModel* model);
+    static bool saveToFile(const QString& fileName, ReportDataModel* model,
+        ExportMode mode = EXPORT_DATA);
 private:
     ExcelHandler() = delete;
     ~ExcelHandler() = delete;
@@ -44,5 +50,7 @@ private:
     static QString mapChineseFontName(const QString& originalName);
 
     static void loadRowColumnSizes(QXlsx::Worksheet* worksheet, ReportDataModel* model);
+
+    static QVariant getCellValueForExport(const CellData* cell, ExportMode mode);
 };
 #endif // EXCELHANDLER_H

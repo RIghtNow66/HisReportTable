@@ -311,18 +311,78 @@ void MainWindow::onImportExcel()
 
 void MainWindow::onExportExcel()
 {
-    QString fileName = QFileDialog::getSaveFileName(this,
-        "导出Excel文件", "", "Excel文件 (*.xlsx)");
-
-    if (fileName.isEmpty()) return;
-
-    if (m_dataModel->saveToExcel(fileName)) {
-        QMessageBox::information(this, "成功", "文件导出成功！");
+    if (m_dataModel->getAllCells().isEmpty()) {
+        QMessageBox::information(this, "提示", "当前没有可导出的数据");
+        return;
     }
-    else {
-        QMessageBox::warning(this, "错误", "文件导出失败！");
+
+    // 弹出选择对话框
+    QMessageBox msgBox;
+    msgBox.setWindowTitle("选择导出模式");
+    msgBox.setText("请选择导出类型：");
+    msgBox.setInformativeText(
+        "• 导出数据：公式和标记将被替换为实际值\n"
+        "• 导出模板：保留公式和标记，可重新导入");
+
+    QPushButton* dataButton = msgBox.addButton("导出数据", QMessageBox::AcceptRole);
+    QPushButton* templateButton = msgBox.addButton("导出模板", QMessageBox::AcceptRole);
+    msgBox.addButton("取消", QMessageBox::RejectRole);
+
+    msgBox.exec();
+
+    if (msgBox.clickedButton() == dataButton) {
+        exportData();
+    }
+    else if (msgBox.clickedButton() == templateButton) {
+        exportTemplate();
     }
 }
+
+void MainWindow::exportData()
+{
+    if (m_dataModel->isFirstRefresh()) {
+        auto reply = QMessageBox::question(this, "确认导出",
+            "数据尚未刷新，建议先点击 [刷新数据]。\n是否继续？",
+            QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+        if (reply == QMessageBox::No) return;
+    }
+
+    QString fileName = QFileDialog::getSaveFileName(this,
+        "导出数据", generateFileName("数据"), "Excel文件 (*.xlsx)");
+    if (fileName.isEmpty()) return;
+
+    if (m_dataModel->saveToExcel(fileName, ReportDataModel::EXPORT_DATA)) {
+        QMessageBox::information(this, "成功", "数据导出成功！");
+    }
+    else {
+        QMessageBox::warning(this, "错误", "数据导出失败！");
+    }
+}
+
+void MainWindow::exportTemplate()
+{
+    QString fileName = QFileDialog::getSaveFileName(this,
+        "导出模板", generateFileName("模板"), "Excel文件 (*.xlsx)");
+    if (fileName.isEmpty()) return;
+
+    if (m_dataModel->saveToExcel(fileName, ReportDataModel::EXPORT_TEMPLATE)) {
+        QMessageBox::information(this, "成功", "模板导出成功！");
+    }
+    else {
+        QMessageBox::warning(this, "错误", "模板导出失败！");
+    }
+}
+
+QString MainWindow::generateFileName(const QString& suffix)
+{
+    QString name = m_dataModel->getReportName();
+    if (name.isEmpty()) name = "报表";
+    if (name.startsWith("##")) name = name.mid(2);
+
+    QString time = QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss");
+    return QString("%1_%2_%3.xlsx").arg(name).arg(suffix).arg(time);
+}
+
 
 
 void MainWindow::onFind()

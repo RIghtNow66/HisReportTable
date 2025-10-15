@@ -12,6 +12,7 @@
 #include <QDialog>
 #include <QPushButton>
 #include <QSortFilterProxyModel>
+#include <QDateTime> 
 
 #include "DataBindingConfig.h" 
 #include "EnhancedTableView.h"
@@ -71,6 +72,10 @@ private:
     QString adjustFormulaReferences(const QString& formula, int rowOffset);
 
     int findFillEndRow(int currentRow, int currentCol);
+
+    void exportData();
+    void exportTemplate();
+    QString generateFileName(const QString& suffix);
 
 private:
     // UI组件

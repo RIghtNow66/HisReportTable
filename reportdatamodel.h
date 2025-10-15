@@ -34,6 +34,11 @@ public:
         MIXED_CHANGE         // 混合变化
     };
 
+    enum ExportMode {
+        EXPORT_DATA,
+        EXPORT_TEMPLATE
+    };
+
     ChangeType detectChanges();  // 检测变化类型
     void saveRefreshSnapshot();  // 保存刷新快照
     bool isFirstRefresh() const { return m_isFirstRefresh; }
@@ -77,7 +82,7 @@ public:
     bool removeColumns(int column, int count, const QModelIndex& parent = QModelIndex()) override;
 
     // 文件操作
-    bool saveToExcel(const QString& fileName);
+    bool saveToExcel(const QString& fileName, ExportMode mode = EXPORT_DATA);
 
     // 单元格访问
     void clearAllCells();

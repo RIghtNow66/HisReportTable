@@ -186,12 +186,13 @@ void ExcelHandler::loadRowColumnSizes(QXlsx::Worksheet* worksheet, ReportDataMod
     }
 }
 
-bool ExcelHandler::saveToFile(const QString& fileName, ReportDataModel* model)
+bool ExcelHandler::saveToFile(const QString& fileName, ReportDataModel* model, ExportMode mode)
 {
     if (fileName.isEmpty() || !model) {
         QMessageBox::warning(nullptr, "错误", "参数无效");
         return false;
     }
+
     QString actualFileName = fileName;
     if (!actualFileName.endsWith(".xlsx", Qt::CaseInsensitive)) {
         actualFileName += ".xlsx";
@@ -208,50 +209,95 @@ bool ExcelHandler::saveToFile(const QString& fileName, ReportDataModel* model)
         QMessageBox::warning(nullptr, "错误", "无法创建Excel工作表");
         return false;
     }
+
+    worksheet->setGridLinesVisible(true);
+
     progress->setValue(10);
 
     const auto& allCells = model->getAllCells();
     int totalCells = allCells.size();
     int processedCells = 0;
 
-    // 保存单元格数据和格式
+    // ===== 计算实际数据范围 =====
+    int maxDataRow = 0;
+    int maxDataCol = 0;
+    for (auto it = allCells.constBegin(); it != allCells.constEnd(); ++it) {
+        maxDataRow = qMax(maxDataRow, it.key().x());
+        maxDataCol = qMax(maxDataCol, it.key().y());
+    }
+
+    // 为所有有数据的单元格添加默认细边框
+    for (auto it = allCells.constBegin(); it != allCells.constEnd(); ++it) {
+        CellData* cell = it.value();
+        if (cell && cell->style.border.left == RTBorderStyle::None
+            && cell->style.border.right == RTBorderStyle::None
+            && cell->style.border.top == RTBorderStyle::None
+            && cell->style.border.bottom == RTBorderStyle::None) {
+            // 添加默认细边框
+            cell->style.border.left = RTBorderStyle::Thin;
+            cell->style.border.right = RTBorderStyle::Thin;
+            cell->style.border.top = RTBorderStyle::Thin;
+            cell->style.border.bottom = RTBorderStyle::Thin;
+        }
+    }
+
+    // ===== 保存单元格数据和格式 =====
     for (auto it = allCells.constBegin(); it != allCells.constEnd(); ++it) {
         if (progress->wasCanceled()) return false;
+
         const QPoint& modelPos = it.key();
         const CellData* cell = it.value();
 
         int excelRow = modelPos.x() + 1;
         int excelCol = modelPos.y() + 1;
+
+        if (mode == EXPORT_TEMPLATE) {
+            qDebug() << "单元格" << modelPos << "hasFormula=" << cell->hasFormula
+                << "formula=" << cell->formula << "value=" << cell->value;
+        }
+
         QXlsx::Format cellFormat = convertToExcelFormat(cell->style);
 
-        if (cell->hasFormula) {
+        // 根据导出模式决定写入内容
+        QVariant valueToWrite = getCellValueForExport(cell, mode);
+
+        /*bool shouldWriteAsFormula = false;
+        if (mode == EXPORT_TEMPLATE && cell->hasFormula) {
             QString fullFormula = cell->formula.startsWith('=') ? cell->formula : ("=" + cell->formula);
             worksheet->write(excelRow, excelCol, fullFormula, cellFormat);
+            shouldWriteAsFormula = true;
         }
-        else {
-            worksheet->write(excelRow, excelCol, cell->value, cellFormat);
-        }
+
+        if (!shouldWriteAsFormula) {
+            worksheet->write(excelRow, excelCol, valueToWrite, cellFormat);
+        }*/
+        worksheet->write(excelRow, excelCol, valueToWrite, cellFormat);
 
         processedCells++;
         if (totalCells > 0) {
-            progress->setValue(10 + (processedCells * 70 / totalCells));
+            progress->setValue(10 + (processedCells * 60 / totalCells));
             qApp->processEvents();
         }
     }
 
-    // 保存行高和列宽
+    progress->setValue(70);
+
+    // ===== 只设置有数据范围内的行高 =====
     const auto& rowHeights = model->getAllRowHeights();
-    const double pixelToPointRatio = 0.75; // 像素转磅
-    for (int i = 0; i < rowHeights.size(); ++i) {
-        if (rowHeights[i] > 0) {
+    const double pixelToPointRatio = 0.75;
+    for (int i = 0; i <= maxDataRow; ++i) {
+        if (i < rowHeights.size() && rowHeights[i] > 0) {
             worksheet->setRowHeight(i + 1, i + 1, rowHeights[i] * pixelToPointRatio);
         }
     }
+
+    progress->setValue(80);
+
+    // ===== 只设置有数据范围内的列宽 =====
     const auto& colWidths = model->getAllColumnWidths();
-    const double pixelToCharacterWidthRatio = 0.5; // 像素转字符数
-    for (int i = 0; i < colWidths.size(); ++i) {
-        if (colWidths[i] > 0) {
-            //   ↓↓↓  将原来的调用修改为这一行  ↓↓↓
+    const double pixelToCharacterWidthRatio = 1.0 / 7.0;  // 修复转换系数
+    for (int i = 0; i <= maxDataCol; ++i) {
+        if (i < colWidths.size() && colWidths[i] > 0) {
             worksheet->setColumnWidth(i + 1, i + 1, colWidths[i] * pixelToCharacterWidthRatio);
         }
     }
@@ -266,6 +312,7 @@ bool ExcelHandler::saveToFile(const QString& fileName, ReportDataModel* model)
         QMessageBox::warning(nullptr, "保存失败", QString("无法保存文件到：%1").arg(actualFileName));
         return false;
     }
+
     progress->setValue(100);
     return true;
 }
@@ -525,3 +572,28 @@ bool ExcelHandler::isValidExcelFile(const QString& fileName)
     return true;
 }
 
+QVariant ExcelHandler::getCellValueForExport(const CellData* cell, ExportMode mode)
+{
+    if (!cell) return QVariant();
+
+    if (mode == EXPORT_DATA) {
+        // 导出数据：返回显示值
+        if (cell->hasFormula && cell->formulaCalculated) {
+            return cell->value;
+        }
+        else if (cell->cellType == CellData::DataMarker) {
+            return cell->queryExecuted && cell->querySuccess ? cell->value : QVariant("N/A");
+        }
+        else if (cell->isDataBinding) {
+            return cell->value;
+        }
+        return cell->value;
+    }
+    else {
+        // 导出模板：返回原始标记
+        if (cell->hasFormula) return cell->formula;
+        if (!cell->originalMarker.isEmpty()) return cell->originalMarker;
+        if (cell->isDataBinding) return cell->bindingKey;
+        return cell->value;
+    }
+}
