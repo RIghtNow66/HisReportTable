@@ -266,7 +266,7 @@ QString MainWindow::adjustFormulaReferences(const QString& formula, int rowOffse
 
         int originalRow = rowPart.toInt();
 
-        // ✅ 只有非绝对引用才调整
+        //  只有非绝对引用才调整
         int newRow = rowAbs.isEmpty() ? (originalRow + rowOffset) : originalRow;
 
         QString newCellRef = colAbs + colPart + rowAbs + QString::number(newRow);

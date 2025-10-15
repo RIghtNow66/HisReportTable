@@ -226,22 +226,22 @@ bool ExcelHandler::saveToFile(const QString& fileName, ReportDataModel* model, E
         maxDataCol = qMax(maxDataCol, it.key().y());
     }
 
-    // 为所有有数据的单元格添加默认细边框
-    for (auto it = allCells.constBegin(); it != allCells.constEnd(); ++it) {
-        CellData* cell = it.value();
-        if (cell && cell->style.border.left == RTBorderStyle::None
-            && cell->style.border.right == RTBorderStyle::None
-            && cell->style.border.top == RTBorderStyle::None
-            && cell->style.border.bottom == RTBorderStyle::None) {
-            // 添加默认细边框
-            cell->style.border.left = RTBorderStyle::Thin;
-            cell->style.border.right = RTBorderStyle::Thin;
-            cell->style.border.top = RTBorderStyle::Thin;
-            cell->style.border.bottom = RTBorderStyle::Thin;
-        }
-    }
-
     // ===== 保存单元格数据和格式 =====
+    // 1. 定义一个默认样式实例用于比较
+    RTCellStyle defaultStyle;
+
+    // Helper: 检查边框是否为默认
+    auto isDefaultBorder = [](const RTCellBorder& border) {
+        return border.left == RTBorderStyle::None &&
+            border.right == RTBorderStyle::None &&
+            border.top == RTBorderStyle::None &&
+            border.bottom == RTBorderStyle::None &&
+            border.leftColor == Qt::black &&
+            border.rightColor == Qt::black &&
+            border.topColor == Qt::black &&
+            border.bottomColor == Qt::black;
+        };
+
     for (auto it = allCells.constBegin(); it != allCells.constEnd(); ++it) {
         if (progress->wasCanceled()) return false;
 
@@ -251,27 +251,33 @@ bool ExcelHandler::saveToFile(const QString& fileName, ReportDataModel* model, E
         int excelRow = modelPos.x() + 1;
         int excelCol = modelPos.y() + 1;
 
-        if (mode == EXPORT_TEMPLATE) {
-            qDebug() << "单元格" << modelPos << "hasFormula=" << cell->hasFormula
-                << "formula=" << cell->formula << "value=" << cell->value;
-        }
-
-        QXlsx::Format cellFormat = convertToExcelFormat(cell->style);
-
         // 根据导出模式决定写入内容
         QVariant valueToWrite = getCellValueForExport(cell, mode);
 
-        /*bool shouldWriteAsFormula = false;
-        if (mode == EXPORT_TEMPLATE && cell->hasFormula) {
-            QString fullFormula = cell->formula.startsWith('=') ? cell->formula : ("=" + cell->formula);
-            worksheet->write(excelRow, excelCol, fullFormula, cellFormat);
-            shouldWriteAsFormula = true;
-        }
+        // 2. 【强化检查】判断是否为完全默认的样式 (包括字体)
+        bool isTrulyDefault =
+            cell->style.backgroundColor == defaultStyle.backgroundColor &&
+            cell->style.textColor == defaultStyle.textColor &&
+            cell->style.alignment == defaultStyle.alignment &&
+            isDefaultBorder(cell->style.border) &&
+            // 增加字体家族、字号和加粗的检查
+            cell->style.font.family() == defaultStyle.font.family() &&
+            cell->style.font.pointSize() == defaultStyle.font.pointSize() &&
+            cell->style.font.bold() == defaultStyle.font.bold();
 
-        if (!shouldWriteAsFormula) {
+        // 只有在单元格样式为默认，且没有合并单元格时，才不写入格式对象
+        if (isTrulyDefault && !cell->mergedRange.isMerged())
+        {
+            // 样式完全是默认的，不传入 Format 对象，Excel 将显示默认网格线
+            worksheet->write(excelRow, excelCol, valueToWrite);
+        }
+        else
+        {
+            // 样式非默认（例如有边框、背景色、或非默认字体等），或者它是合并单元格的主单元格。
+            // 必须写入 Format 对象。
+            QXlsx::Format cellFormat = convertToExcelFormat(cell->style);
             worksheet->write(excelRow, excelCol, valueToWrite, cellFormat);
-        }*/
-        worksheet->write(excelRow, excelCol, valueToWrite, cellFormat);
+        }
 
         processedCells++;
         if (totalCells > 0) {

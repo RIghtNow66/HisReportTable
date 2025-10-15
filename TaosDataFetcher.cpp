@@ -5,6 +5,7 @@
 #include <iostream>
 #include <algorithm>
 #include <QMessageBox>
+#include <qDebug>
 
 TaosDataFetcher::TaosDataFetcher()
     : tdb(new taosdbapi())

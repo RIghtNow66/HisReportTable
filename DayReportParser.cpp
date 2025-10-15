@@ -176,59 +176,191 @@ void DayReportParser::parseRow(int row)
     }
 }
 
+//bool DayReportParser::executeQueries(QProgressDialog* progress)
+//{
+//    if (m_queryTasks.isEmpty()) {
+//        qWarning() << "没有待查询的任务";
+//        return true; // 没有任务也算成功完成
+//    }
+//    
+//    qDebug() << "========== 开始执行查询 ==========";
+//    int successCount = 0;
+//    int failCount = 0;
+//    int total = m_queryTasks.size();
+//
+//    for (int i = 0; i < total; ++i) {
+//        // 【核心修正】在每次循环开始时检查是否已取消
+//        if (progress && progress->wasCanceled()) {
+//            qDebug() << "查询被用户取消。";
+//            return false; // 返回 false 表示被取消
+//        }
+//
+//        const QueryTask& task = m_queryTasks[i];
+//
+//        // 更新进度条文本
+//        if (progress) {
+//            progress->setLabelText(QString("正在查询: %1/%2").arg(i + 1).arg(total));
+//        }
+//
+//        try {
+//            QVariant result = querySinglePoint(task.queryPath);
+//            task.cell->value = result;
+//            task.cell->queryExecuted = true;
+//            task.cell->querySuccess = true;
+//            successCount++;
+//        }
+//        catch (const std::exception& e) {
+//            qWarning() << QString("失败: 行%1列%2 - %3").arg(task.row).arg(task.col).arg(e.what());
+//            task.cell->value = "ERROR";
+//            task.cell->queryExecuted = true;
+//            task.cell->querySuccess = false;
+//            failCount++;
+//        }
+//
+//        emit queryProgress(i + 1, total);
+//    }
+//
+//    qDebug() << "========================================";
+//    qDebug() << QString("查询完成: 成功 %1, 失败 %2").arg(successCount).arg(failCount);
+//
+//    emit queryCompleted(successCount, failCount);
+//
+//    // 通知模型刷新显示
+//    m_model->notifyDataChanged();
+//
+//    return true; // 返回 true 表示正常完成
+//}
+
 bool DayReportParser::executeQueries(QProgressDialog* progress)
 {
     if (m_queryTasks.isEmpty()) {
         qWarning() << "没有待查询的任务";
-        return true; // 没有任务也算成功完成
+        return true;
     }
 
-    qDebug() << "========== 开始执行查询 ==========";
+    qDebug() << "========== 开始批量查询 ==========";
+
+    // ===== 第1步：按时间分组 =====
+    QMap<QString, QVector<int>> timeGroups;
+
+    for (int i = 0; i < m_queryTasks.size(); ++i) {
+        const QueryTask& task = m_queryTasks[i];
+        QString timeKey = task.cell->queryPath.section('@', 1, 1).section('~', 0, 0);
+        timeGroups[timeKey].append(i);
+    }
+
+    qDebug() << "分组完成：" << timeGroups.size() << "个时间点";
+
+    // ===== 【修改】设置进度条范围为总任务数 =====
+    int totalTasks = m_queryTasks.size();
+    int processedTasks = 0;
+
+    if (progress) {
+        progress->setRange(0, totalTasks);
+        progress->setValue(0);
+    }
+
+    // ===== 第2步：批量查询 =====
     int successCount = 0;
     int failCount = 0;
-    int total = m_queryTasks.size();
+    int processedGroups = 0;
+    int totalGroups = timeGroups.size();
 
-    for (int i = 0; i < total; ++i) {
-        // 【核心修正】在每次循环开始时检查是否已取消
+    for (auto it = timeGroups.begin(); it != timeGroups.end(); ++it) {
         if (progress && progress->wasCanceled()) {
             qDebug() << "查询被用户取消。";
-            return false; // 返回 false 表示被取消
+            return false;
         }
 
-        const QueryTask& task = m_queryTasks[i];
+        const QString& timeKey = it.key();
+        const QVector<int>& taskIndices = it.value();
 
-        // 更新进度条文本
+        // ===== 【修改】更新进度文本和进度值 =====
         if (progress) {
-            progress->setLabelText(QString("正在查询: %1/%2").arg(i + 1).arg(total));
+            progress->setLabelText(QString("正在查询: 第 %1/%2 组 (已完成 %3/%4 个数据点)")
+                .arg(processedGroups + 1)
+                .arg(totalGroups)
+                .arg(processedTasks)
+                .arg(totalTasks));
         }
+
+        // 构建批量查询
+        QStringList rtuList;
+        for (int idx : taskIndices) {
+            rtuList << m_queryTasks[idx].cell->rtuId;
+        }
+
+        const QueryTask& firstTask = m_queryTasks[taskIndices[0]];
+        QString queryPath = firstTask.queryPath;
+        QString rtuPart = rtuList.join(",");
+        QString timePart = queryPath.section('@', 1);
+        QString batchQuery = rtuPart + "@" + timePart;
+
+        qDebug() << "批量查询" << taskIndices.size() << "个RTU：" << batchQuery;
 
         try {
-            QVariant result = querySinglePoint(task.queryPath);
-            task.cell->value = result;
-            task.cell->queryExecuted = true;
-            task.cell->querySuccess = true;
-            successCount++;
+            auto dataMap = m_fetcher->fetchDataFromAddress(batchQuery.toStdString());
+
+            if (dataMap.empty()) {
+                qWarning() << "查询无数据";
+                for (int idx : taskIndices) {
+                    m_queryTasks[idx].cell->value = "N/A";
+                    m_queryTasks[idx].cell->queryExecuted = true;
+                    m_queryTasks[idx].cell->querySuccess = false;
+                    failCount++;
+                }
+            }
+            else {
+                auto firstEntry = dataMap.begin();
+                const std::vector<float>& values = firstEntry->second;
+
+                for (size_t i = 0; i < taskIndices.size(); ++i) {
+                    int idx = taskIndices[i];
+
+                    if (i < values.size()) {
+                        double result = static_cast<double>(values[i]);
+                        m_queryTasks[idx].cell->value = QString::number(result, 'f', 2);
+                        m_queryTasks[idx].cell->queryExecuted = true;
+                        m_queryTasks[idx].cell->querySuccess = true;
+                        successCount++;
+                    }
+                    else {
+                        m_queryTasks[idx].cell->value = "N/A";
+                        m_queryTasks[idx].cell->queryExecuted = true;
+                        m_queryTasks[idx].cell->querySuccess = false;
+                        failCount++;
+                    }
+                }
+            }
         }
         catch (const std::exception& e) {
-            qWarning() << QString("失败: 行%1列%2 - %3").arg(task.row).arg(task.col).arg(e.what());
-            task.cell->value = "ERROR";
-            task.cell->queryExecuted = true;
-            task.cell->querySuccess = false;
-            failCount++;
+            qWarning() << "批量查询失败：" << e.what();
+            for (int idx : taskIndices) {
+                m_queryTasks[idx].cell->value = "ERROR";
+                m_queryTasks[idx].cell->queryExecuted = true;
+                m_queryTasks[idx].cell->querySuccess = false;
+                failCount++;
+            }
         }
 
-        emit queryProgress(i + 1, total);
+        // ===== 【修改】更新已处理的任务数 =====
+        processedTasks += taskIndices.size();
+        processedGroups++;
+
+        if (progress) {
+            progress->setValue(processedTasks);
+        }
+
+        emit queryProgress(processedTasks, totalTasks);
     }
 
     qDebug() << "========================================";
-    qDebug() << QString("查询完成: 成功 %1, 失败 %2").arg(successCount).arg(failCount);
+    qDebug() << QString("批量查询完成: 成功 %1, 失败 %2").arg(successCount).arg(failCount);
 
     emit queryCompleted(successCount, failCount);
-
-    // 通知模型刷新显示
     m_model->notifyDataChanged();
 
-    return true; // 返回 true 表示正常完成
+    return true;
 }
 
 void DayReportParser::restoreToTemplate()
