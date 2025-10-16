@@ -230,12 +230,22 @@ bool ReportDataModel::refreshReportData(QProgressDialog* progress)
 
     // ===== 【步骤3】执行刷新操作 =====
     bool completedSuccessfully = false;
+    int actualSuccessCount = 0;
 
-    // 【关键修改】根据 needQuery 决定是否查询
+    // 根据 needQuery 决定是否查询
     if (needQuery) {
         // 需要查询数据
         if (m_reportType == DAY_REPORT && m_dayParser) {
             completedSuccessfully = m_dayParser->executeQueries(progress);
+
+            // 统计实际成功的数据点
+            for (auto it = m_cells.constBegin(); it != m_cells.constEnd(); ++it) {
+                const CellData* cell = it.value();
+                if (cell && cell->cellType == CellData::DataMarker &&
+                    cell->queryExecuted && cell->querySuccess) {
+                    actualSuccessCount++;
+                }
+            }
         }
         else if (m_reportType == NORMAL_EXCEL) {
             qDebug() << "普通Excel不支持数据查询";
@@ -247,11 +257,25 @@ bool ReportDataModel::refreshReportData(QProgressDialog* progress)
         completedSuccessfully = true;
     }
 
-    // 【关键修改】无论是否查询，都计算公式
-    if (completedSuccessfully) {
-        qDebug() << "开始计算公式...";
-        recalculateAllFormulas();
-        saveRefreshSnapshot();  // 保存快照
+    // 无论是否查询，都计算公式
+    if (m_reportType == DAY_REPORT && m_dayParser) {
+        int totalTasks = m_dayParser->getPendingQueryCount();
+        if (totalTasks > 0) {
+            double successRate = static_cast<double>(actualSuccessCount) / totalTasks;
+            if (successRate >= 0.5) {  // 至少50%的数据成功
+                saveRefreshSnapshot();
+                qDebug() << QString("保存快照: 成功率 %1%").arg(successRate * 100, 0, 'f', 1);
+            }
+            else {
+                qWarning() << QString("成功率过低 (%1%)，不保存快照").arg(successRate * 100, 0, 'f', 1);
+            }
+        }
+        else {
+            saveRefreshSnapshot();  // 没有数据任务，直接保存
+        }
+    }
+    else {
+        saveRefreshSnapshot();  // 非日报模式，直接保存
     }
 
     return completedSuccessfully;

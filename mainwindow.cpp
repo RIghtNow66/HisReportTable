@@ -286,6 +286,7 @@ void MainWindow::onImportExcel()
     if (fileName.isEmpty()) return;
 
     m_tableView->clearSpans();
+    m_tableView->resetColumnWidthsBase();
 
     // =====【已修正】使用统一的加载接口 =====
     if (m_dataModel->loadReportTemplate(fileName)) {
@@ -690,6 +691,8 @@ void MainWindow::applyRowColumnSizes()
             m_tableView->setRowHeight(i, static_cast<int>(rowHeights[i]));
         }
     }
+	// 保存初始行高，供缩放使用
+    m_tableView->saveBaseRowHeights();
 }
 
 void MainWindow::onRefreshData()
@@ -710,29 +713,45 @@ void MainWindow::onRefreshData()
         }
 
         // 1. 创建进度对话框
-        // 我们在这里创建它，但它只在需要长时间操作时才会显示
-        QProgressDialog progress("正在刷新数据...", "取消", 0, 100, this);
+        QProgressDialog progress("正在准备数据...", "取消", 0, 0, this);  // 初始不确定范围
         progress.setWindowModality(Qt::WindowModal);
-        progress.setMinimumDuration(500); // 操作超过0.5秒才显示，避免闪烁
+        progress.setMinimumDuration(500);
 
-        // 2. 如果解析器中存在待查询的任务，就设置进度条的范围并连接信号
-        int queryCount = parser->getPendingQueryCount();
-        if (queryCount > 0) {
-            progress.setRange(0, queryCount);
-            connect(parser, &DayReportParser::queryProgress, &progress, &QProgressDialog::setValue);
+        bool needsPrefetch = parser->getPendingQueryCount() > 0 &&
+            !parser->isPrefetching();
+
+
+        if (needsPrefetch) {
+            // 连接预查询进度
+            progress.setLabelText("正在预查询数据...");
+            progress.setRange(0, 0);  // 不确定范围（滚动条模式）
+
+            connect(parser, &DayReportParser::prefetchProgress,
+                &progress, [&progress](int current, int total) {
+                    if (progress.maximum() != total) {
+                        progress.setRange(0, total);
+                    }
+                    progress.setValue(current);
+                });
+        }
+        else {
+            // 如果已有缓存，直接设置填充数据的进度
+            progress.setLabelText("正在填充数据...");
+            int queryCount = parser->getPendingQueryCount();
+            if (queryCount > 0) {
+                progress.setRange(0, queryCount);
+                connect(parser, &DayReportParser::queryProgress,
+                    &progress, &QProgressDialog::setValue);
+            }
         }
 
         // 3. 调用模型的刷新函数，将进度条传入
         // 模型内部会决定是否执行查询，如果执行，解析器就会更新我们这里的进度条
         bool completed = m_dataModel->refreshReportData(&progress);
 
-        // 4. 操作完成后，断开连接，这是一个好习惯
-        if (queryCount > 0) {
-            disconnect(parser, &DayReportParser::queryProgress, &progress, &QProgressDialog::setValue);
-        }
+        // 断开所有连接
+        disconnect(parser, nullptr, &progress, nullptr);
 
-        // 5. 主窗口只负责处理“用户点击取消”的情况
-        // 所有其他的提示（如“已是最新”）都由模型自己负责
         if (!completed && progress.wasCanceled()) {
             QMessageBox::warning(this, "已取消", "数据刷新操作已被用户取消。");
             m_dataModel->restoreToTemplate();

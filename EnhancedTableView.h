@@ -7,8 +7,46 @@
 #include <QWheelEvent>
 #include <QKeyEvent> 
 #include <QPropertyAnimation>
+#include <QStyledItemDelegate>
 
 class ReportDataModel;
+
+class ScaledFontDelegate : public QStyledItemDelegate
+{
+    Q_OBJECT
+public:
+    explicit ScaledFontDelegate(QObject* parent = nullptr)
+        : QStyledItemDelegate(parent)
+        , m_useScaledFont(false)
+        , m_scaledFontSize(10)
+    {
+    }
+
+    void setScaledFontSize(int size) {
+        m_scaledFontSize = size;
+        m_useScaledFont = (size > 0);
+    }
+
+    void resetScaling() {
+        m_useScaledFont = false;
+    }
+
+protected:
+    void initStyleOption(QStyleOptionViewItem* option, const QModelIndex& index) const override
+    {
+        QStyledItemDelegate::initStyleOption(option, index);
+
+        if (m_useScaledFont) {
+            QFont font = option->font;
+            font.setPointSize(m_scaledFontSize);
+            option->font = font;
+        }
+    }
+
+private:
+    bool m_useScaledFont;
+    int m_scaledFontSize;
+};
 
 class EnhancedTableView : public QTableView
 {
@@ -27,6 +65,9 @@ public:
 
     int animatedFontSize() const { return m_currentAnimatedFontSize; }
     void setAnimatedFontSize(int size);
+
+    void saveBaseRowHeights();
+    void resetColumnWidthsBase();
 
 signals:
     void zoomChanged(qreal factor);
@@ -53,7 +94,7 @@ private:
     int m_baseRowHeight;         // 基础行高
     int m_baseColumnWidth;       // 基础列宽
 
-    // 保存所有列的初始宽度
+    QMap<int, int> m_baseRowHeights;
     QMap<int, int> m_baseColumnWidths;
 
 	// 字体动画
@@ -65,6 +106,10 @@ private:
     static constexpr qreal MIN_ZOOM = 0.5;
     static constexpr qreal MAX_ZOOM = 3.0;
     static constexpr qreal ZOOM_STEP = 0.1;
+
+    ScaledFontDelegate* m_fontDelegate;
 };
+
+
 
 #endif // ENHANCEDTABLEVIEW_H

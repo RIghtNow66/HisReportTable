@@ -18,6 +18,7 @@ DayReportParser::DayReportParser(ReportDataModel* model, QObject* parent)
     , m_dateFound(false)
     , m_prefetchWatcher(nullptr)  
     , m_isPrefetching(false)     
+    , m_stopRequested(0)
 {
     //  创建 FutureWatcher
     m_prefetchWatcher = new QFutureWatcher<bool>(this);
@@ -29,9 +30,39 @@ DayReportParser::DayReportParser(ReportDataModel* model, QObject* parent)
 
 DayReportParser::~DayReportParser()
 {
+    if (m_prefetchWatcher) {
+        disconnect(m_prefetchWatcher, nullptr, this, nullptr);
+    }
+
     if (m_isPrefetching) {
-        qDebug() << "等待预查询完成...";
-        m_prefetchFuture.waitForFinished();
+        qDebug() << "请求停止预查询...";
+        m_stopRequested.storeRelease(1);  // 设置停止标志
+
+        // 不再阻塞等待，而是异步取消
+        if (!m_prefetchFuture.isFinished()) {
+            // 尝试取消（注意：QtConcurrent::run不支持取消，只能等待）
+            qDebug() << "等待后台线程退出（最多3秒）...";
+
+            // 使用事件循环等待，避免阻塞UI
+            QEventLoop loop;
+            QTimer::singleShot(3000, &loop, &QEventLoop::quit);
+
+            // 不再连接finished信号，因为已经断开了
+            QTimer checkTimer;
+            checkTimer.setInterval(100);
+            connect(&checkTimer, &QTimer::timeout, [&]() {
+                if (m_prefetchFuture.isFinished()) {
+                    loop.quit();
+                }
+                });
+            checkTimer.start();
+
+            loop.exec();
+
+            if (!m_prefetchFuture.isFinished()) {
+                qWarning() << "后台线程未能及时退出，强制析构";
+            }
+        }
     }
     delete m_fetcher;
 }
@@ -43,6 +74,7 @@ void DayReportParser::onPrefetchFinished()
     bool success = m_prefetchFuture.result();
 
     if (success) {
+        QMutexLocker locker(&m_cacheMutex);
         qDebug() << " 预查询完成：已缓存" << m_dataCache.size() << "个数据点";
     }
     else {
@@ -52,6 +84,7 @@ void DayReportParser::onPrefetchFinished()
 
 void DayReportParser::clearCache()
 {
+    QMutexLocker locker(&m_cacheMutex);  // 自动加锁
     qDebug() << "清空缓存：" << m_dataCache.size() << "个数据点";
     m_dataCache.clear();
 }
@@ -83,6 +116,8 @@ QTime DayReportParser::getTaskTime(const QueryTask& task)
 // ===== 核心流程 =====
 bool DayReportParser::findInCache(const QString& rtuId, int64_t timestamp, float& value)
 {
+    QMutexLocker locker(&m_cacheMutex);
+
     CacheKey key;
     key.rtuId = rtuId;
     key.timestamp = timestamp;
@@ -96,14 +131,26 @@ bool DayReportParser::findInCache(const QString& rtuId, int64_t timestamp, float
     // 2. 容错匹配：±60秒内的最近时间点
     const int64_t tolerance = 60000;  // 60秒（毫秒）
 
+    int64_t closestDiff = std::numeric_limits<int64_t>::max();
+    bool found = false;  // 是否找到匹配
+    float closestValue = 0.0f;  // 最接近的值
+
     for (auto it = m_dataCache.constBegin(); it != m_dataCache.constEnd(); ++it) {
         if (it.key().rtuId == rtuId) {
             int64_t diff = qAbs(it.key().timestamp - timestamp);
             if (diff <= tolerance) {
-                value = it.value();
-                return true;
+                if (diff < closestDiff) {
+                    closestDiff = diff;
+                    closestValue = it.value();
+                    found = true;
+                }
             }
         }
+    }
+
+    if (found) {
+        value = closestValue;
+        return true;
     }
 
     return false;
@@ -134,29 +181,30 @@ bool DayReportParser::executeSingleQuery(const QString& rtuList,
             qWarning() << "  查询无数据";
             return false;
         }
+        {
+            QMutexLocker locker(&m_cacheMutex);
+            // 解析RTU列表
+            QStringList rtuArray = rtuList.split(",");
 
-        // 解析RTU列表
-        QStringList rtuArray = rtuList.split(",");
+            // 存入缓存
+            for (auto it = dataMap.begin(); it != dataMap.end(); ++it) {
+                int64_t timestamp = it->first;
+                const std::vector<float>& values = it->second;
 
-        // 存入缓存
-        for (auto it = dataMap.begin(); it != dataMap.end(); ++it) {
-            int64_t timestamp = it->first;
-            const std::vector<float>& values = it->second;
+                for (int i = 0; i < rtuArray.size() && i < values.size(); ++i) {
+                    CacheKey key;
+                    key.rtuId = rtuArray[i];
+                    key.timestamp = timestamp;
 
-            for (int i = 0; i < rtuArray.size() && i < values.size(); ++i) {
-                CacheKey key;
-                key.rtuId = rtuArray[i];
-                key.timestamp = timestamp;
-
-                m_dataCache[key] = values[i];
+                    m_dataCache[key] = values[i];
+                }
             }
+
+            qDebug() << QString(" 已缓存 %1 个时间点 × %2 个RTU = %3 个值")
+                .arg(dataMap.size())
+                .arg(rtuArray.size())
+                .arg(m_dataCache.size());
         }
-
-        qDebug() << QString(" 已缓存 %1 个时间点 × %2 个RTU = %3 个值")
-            .arg(dataMap.size())
-            .arg(rtuArray.size())
-            .arg(m_dataCache.size());
-
         return true;
     }
     catch (const std::exception& e) {
@@ -249,6 +297,8 @@ bool DayReportParser::analyzeAndPrefetch()
     // 1. 识别时间块
     QList<TimeBlock> blocks = identifyTimeBlocks();
 
+    if (m_stopRequested.loadAcquire()) return false;
+
     if (blocks.isEmpty()) {
         qWarning() << "未识别到有效时间块";
         return false;
@@ -309,6 +359,10 @@ bool DayReportParser::analyzeAndPrefetch()
     // 4. 执行查询
     bool allSuccess = true;
     for (int i = 0; i < mergedBlocks.size(); ++i) {
+        if (m_stopRequested.loadAcquire()) {  // 每次循环检查
+            qDebug() << "后台查询被中断";
+            return false;
+        }
         const TimeBlock& block = mergedBlocks[i];
 
         qDebug() << QString("执行查询 %1/%2: %3 ~ %4")
@@ -316,6 +370,8 @@ bool DayReportParser::analyzeAndPrefetch()
             .arg(mergedBlocks.size())
             .arg(block.startTime.toString("HH:mm"))
             .arg(block.endTime.toString("HH:mm"));
+
+        emit prefetchProgress(i + 1, mergedBlocks.size());
 
         bool success = executeSingleQuery(rtuList,
             block.startTime,
@@ -508,12 +564,17 @@ bool DayReportParser::executeQueries(QProgressDialog* progress)
     qDebug() << "========== 开始填充数据 ==========";
 
     // 如果缓存为空，重新查询
+    bool cacheReady = true;
     if (m_dataCache.isEmpty()) {
         qWarning() << "缓存为空，重新查询...";
-        if (!analyzeAndPrefetch()) {
-            return false;
+        cacheReady = analyzeAndPrefetch();
+
+        // 即使查询失败，也继续填充（会标记为N/A）
+        if (!cacheReady) {
+            qWarning() << "查询失败，将所有数据标记为N/A";
         }
     }
+
 
     if (progress) {
         progress->setRange(0, m_queryTasks.size());
@@ -525,16 +586,19 @@ bool DayReportParser::executeQueries(QProgressDialog* progress)
 
     for (int i = 0; i < m_queryTasks.size(); ++i) {
         if (progress && progress->wasCanceled()) {
+            // 取消时，将剩余任务标记为未执行
+            for (int j = i; j < m_queryTasks.size(); ++j) {
+                m_queryTasks[j].cell->queryExecuted = false;
+            }
             return false;
         }
 
         const QueryTask& task = m_queryTasks[i];
 
-        //  使用新方法获取时间
         QTime time = getTaskTime(task);
         if (!time.isValid()) {
             task.cell->value = "N/A";
-            task.cell->queryExecuted = true;
+            task.cell->queryExecuted = true;  // 【保持】标记已执行
             task.cell->querySuccess = false;
             failCount++;
             continue;
@@ -547,7 +611,8 @@ bool DayReportParser::executeQueries(QProgressDialog* progress)
         int64_t timestamp = dateTime.toMSecsSinceEpoch();
 
         float value = 0.0f;
-        if (findInCache(task.cell->rtuId, timestamp, value)) {
+        // 只有缓存就绪时才尝试查找
+        if (cacheReady && findInCache(task.cell->rtuId, timestamp, value)) {
             task.cell->value = QString::number(value, 'f', 2);
             task.cell->queryExecuted = true;
             task.cell->querySuccess = true;
@@ -555,7 +620,7 @@ bool DayReportParser::executeQueries(QProgressDialog* progress)
         }
         else {
             task.cell->value = "N/A";
-            task.cell->queryExecuted = true;
+            task.cell->queryExecuted = true;  // 【保持】标记已执行
             task.cell->querySuccess = false;
             failCount++;
         }
@@ -570,7 +635,7 @@ bool DayReportParser::executeQueries(QProgressDialog* progress)
     emit queryCompleted(successCount, failCount);
     m_model->notifyDataChanged();
 
-    return true;
+    return successCount > 0;
 }
 
 void DayReportParser::restoreToTemplate()

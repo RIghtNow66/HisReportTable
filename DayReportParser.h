@@ -11,6 +11,7 @@
 #include <QThread>
 #include <QFuture>
 #include <QFutureWatcher> 
+#include <QMutex> 
 
 class ReportDataModel;
 class TaosDataFetcher;
@@ -45,6 +46,8 @@ signals:
     void queryProgress(int current, int total);
     void parseCompleted(bool success, QString message);
     void queryCompleted(int successCount, int failCount);
+
+    void prefetchProgress(int current, int total);
 
 public:
     // 缓存键
@@ -95,6 +98,9 @@ private:
     QFuture<bool> m_prefetchFuture;
     QFutureWatcher<bool>* m_prefetchWatcher;
     bool m_isPrefetching;
+
+    QMutex m_cacheMutex;
+    QAtomicInt m_stopRequested;
 
 private slots:
     void onPrefetchFinished();

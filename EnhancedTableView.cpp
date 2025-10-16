@@ -17,6 +17,7 @@ EnhancedTableView::EnhancedTableView(QWidget* parent)
     , m_baseColumnWidth(80)      
     , m_fontAnimation(nullptr)         
     , m_currentAnimatedFontSize(9)
+    , m_fontDelegate(nullptr)
 {
     QFont currentFont = font();
     if (currentFont.pointSize() > 0) {
@@ -27,7 +28,12 @@ EnhancedTableView::EnhancedTableView(QWidget* parent)
     if (verticalHeader()->defaultSectionSize() > 0) {
         m_baseRowHeight = verticalHeader()->defaultSectionSize();
     }
+
+    m_fontDelegate = new ScaledFontDelegate(this);
+    setItemDelegate(m_fontDelegate);
 }
+
+
 
 void EnhancedTableView::paintEvent(QPaintEvent* event)
 {
@@ -243,6 +249,7 @@ void EnhancedTableView::setZoomFactor(qreal factor)
 // 重置缩放到100%
 void EnhancedTableView::resetZoom()
 {
+    m_fontDelegate->resetScaling();  // 重置委托
     setZoomFactor(1.0);
     qDebug() << "缩放已重置为100%";
 }
@@ -310,15 +317,32 @@ void EnhancedTableView::setAnimatedFontSize(int size)
 {
     m_currentAnimatedFontSize = size;
 
-    // 应用字体大小
+    setUpdatesEnabled(false);
+
+
+    // 通过委托设置缩放字体
+    m_fontDelegate->setScaledFontSize(size);
+
+    // 禁用自动更新
+    setUpdatesEnabled(false);
+
+    // 应用字体大小到表格框架
     QFont newFont = font();
     newFont.setPointSize(size);
     setFont(newFont);
 
-    // 同步调整行高（按相同比例）
+    // 同步调整行高
     qreal currentZoom = static_cast<qreal>(size) / m_baseFontSize;
     int newRowHeight = qRound(m_baseRowHeight * currentZoom);
     verticalHeader()->setDefaultSectionSize(qMax(15, newRowHeight));
+
+    // 调整自定义行高
+    for (auto it = m_baseRowHeights.constBegin(); it != m_baseRowHeights.constEnd(); ++it) {
+        int row = it.key();
+        int baseHeight = it.value();
+        int newHeight = qRound(baseHeight * currentZoom);
+        setRowHeight(row, qMax(15, newHeight));
+    }
 
     // 同步调整列宽
     adjustAllColumnsWidth();
@@ -329,8 +353,9 @@ void EnhancedTableView::setAnimatedFontSize(int size)
     horizontalHeader()->setFont(headerFont);
     verticalHeader()->setFont(headerFont);
 
-    // 刷新显示
-    viewport()->update();
+    // 重新启用更新
+    setUpdatesEnabled(true);
+    viewport()->update();  // 只触发一次重绘
 }
 
 void EnhancedTableView::adjustAllColumnsWidth()
@@ -342,16 +367,19 @@ void EnhancedTableView::adjustAllColumnsWidth()
     int columnCount = model()->columnCount();
 
     // 第一次调用时，保存所有列的初始宽度
-    if (m_baseColumnWidths.isEmpty()) {
+    if (m_baseColumnWidths.isEmpty() || m_baseColumnWidths.size() != columnCount) {
+        m_baseColumnWidths.clear();  // 【新增】清空旧数据
+
         for (int col = 0; col < columnCount; ++col) {
             int width = columnWidth(col);
             if (width > 0) {
                 m_baseColumnWidths[col] = width;
             }
             else {
-                m_baseColumnWidths[col] = m_baseColumnWidth;  // 使用默认值
+                m_baseColumnWidths[col] = m_baseColumnWidth;
             }
         }
+        qDebug() << "重新采样列宽基准，共" << columnCount << "列";  // 【新增】日志
     }
 
     //  按缩放比例调整所有列宽
@@ -362,4 +390,29 @@ void EnhancedTableView::adjustAllColumnsWidth()
             setColumnWidth(col, qMax(30, newWidth));  // 最小30像素
         }
     }
+}
+
+void EnhancedTableView::saveBaseRowHeights()
+{
+    m_baseRowHeights.clear();
+
+    ReportDataModel* reportModel = getReportModel();
+    if (!reportModel) return;
+
+    const auto& modelRowHeights = reportModel->getAllRowHeights();
+    for (int row = 0; row < modelRowHeights.size(); ++row) {
+        if (modelRowHeights[row] > 0) {
+            m_baseRowHeights[row] = static_cast<int>(modelRowHeights[row]);
+        }
+        else {
+            // 如果Model中没有记录，使用View当前的行高
+            m_baseRowHeights[row] = rowHeight(row);
+        }
+    }
+}
+
+void EnhancedTableView::resetColumnWidthsBase()
+{
+    m_baseColumnWidths.clear();
+    qDebug() << "列宽基准已重置";
 }
