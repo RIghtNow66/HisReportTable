@@ -16,7 +16,6 @@
 #include <cmath>               // 用于 std::isnan, std::isinf
 #include <QMessageBox>
 
-#include "UniversalQueryEngine.h"
 #include "DayReportParser.h"
 // QXlsx相关（检查是否已包含）
 #include "xlsxdocument.h"      // 用于 QXlsx::Document
@@ -75,9 +74,6 @@ bool ReportDataModel::loadReportTemplate(const QString& fileName)
     else {
         m_reportType = NORMAL_EXCEL;
         qDebug() << "加载普通Excel文件。";
-        // 对于普通Excel，在加载阶段我们只识别 ## 绑定，不计算公式。
-        // 公式计算将在用户点击“刷新数据”时与数据绑定一起刷新。
-        resolveDataBindings();
     }
 
     // 无论加载何种类型，都通知视图进行一次初始显示
@@ -242,13 +238,7 @@ bool ReportDataModel::refreshReportData(QProgressDialog* progress)
             completedSuccessfully = m_dayParser->executeQueries(progress);
         }
         else if (m_reportType == NORMAL_EXCEL) {
-            if (changeType == BINDING_ONLY) {
-                QList<QString> newBindings = getNewBindings();
-                refreshBindingsOnly(newBindings);
-            }
-            else {
-                resolveDataBindings();
-            }
+            qDebug() << "普通Excel不支持数据查询";
             completedSuccessfully = true;
         }
     }
@@ -450,14 +440,6 @@ bool ReportDataModel::setData(const QModelIndex& index, const QVariant& value, i
         cell->value = text;  // 显示公式文本
         cell->formulaCalculated = false;  // 标记为未计算
         // 不立即调用 calculateFormula
-    }
-    else if (text.startsWith("##")) {
-        cell->isDataBinding = true;
-        cell->bindingKey = text;
-        cell->value = "0";
-        if (m_reportType == NORMAL_EXCEL) {
-            resolveDataBindings();
-        }
     }
     else {
         // 普通文本或其他标记
@@ -735,35 +717,6 @@ bool ReportDataModel::loadFromExcelFile(const QString& fileName)
     return result;
 }
 
-// 这个函数是核心，它负责收集所有需要绑定的Key，
-// 并通过信号发送给外部（例如MainWindow）去查询数据。
-void ReportDataModel::resolveDataBindings()
-{
-    QList<QString> keysToResolve;
-    for (auto it = m_cells.constBegin(); it != m_cells.constEnd(); ++it) {
-        CellData* cell = it.value();
-        if (cell && cell->isDataBinding) {
-            keysToResolve.append(cell->bindingKey);
-        }
-    }
-
-    if (keysToResolve.isEmpty()) {
-        return;
-    }
-
-    QHash<QString, QVariant> resolvedData = UniversalQueryEngine::instance().queryValuesForBindingKeys(keysToResolve);
-
-    // 更新单元格的值
-    for (auto it = m_cells.begin(); it != m_cells.end(); ++it) {
-        CellData* cell = it.value();
-        if (cell && cell->isDataBinding && resolvedData.contains(cell->bindingKey)) {
-            cell->value = resolvedData[cell->bindingKey];
-        }
-    }
-
-    // 通知整个视图刷新，因为多个单元格数据可能已改变
-    emit dataChanged(index(0, 0), index(m_maxRow - 1, m_maxCol - 1));
-}
 
 bool ReportDataModel::saveToExcel(const QString& fileName, ExportMode mode)
 {
@@ -1034,26 +987,4 @@ QList<QString> ReportDataModel::getNewBindings() const
     return newBindings;
 }
 
-void ReportDataModel::refreshBindingsOnly(const QList<QString>& newBindings)
-{
-    if (newBindings.isEmpty()) {
-        return;
-    }
-
-    qDebug() << "增量查询绑定数据，数量:" << newBindings.size();
-
-    // 查询新增的绑定数据
-    QHash<QString, QVariant> resolvedData =
-        UniversalQueryEngine::instance().queryValuesForBindingKeys(newBindings);
-
-    // 更新单元格的值
-    for (auto it = m_cells.begin(); it != m_cells.end(); ++it) {
-        CellData* cell = it.value();
-        if (cell && cell->isDataBinding && resolvedData.contains(cell->bindingKey)) {
-            cell->value = resolvedData[cell->bindingKey];
-        }
-    }
-
-    emit dataChanged(index(0, 0), index(m_maxRow - 1, m_maxCol - 1));
-}
 

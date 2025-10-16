@@ -1,27 +1,336 @@
-#include "DayReportParser.h"
-#include "reportdatamodel.h"
-#include "DataBindingConfig.h"
-#include "TaosDataFetcher.h"
 #include <qDebug>
 #include <QDate>
 #include <QTime>
 #include <stdexcept> 
 #include <QProgressDialog>
+#include <QtConcurrent> 
+
+#include "DayReportParser.h"
+#include "reportdatamodel.h"
+#include "DataBindingConfig.h"
+#include "TaosDataFetcher.h"
+
 
 DayReportParser::DayReportParser(ReportDataModel* model, QObject* parent)
     : QObject(parent)
     , m_model(model)
     , m_fetcher(new TaosDataFetcher())
     , m_dateFound(false)
+    , m_prefetchWatcher(nullptr)  
+    , m_isPrefetching(false)     
 {
+    //  创建 FutureWatcher
+    m_prefetchWatcher = new QFutureWatcher<bool>(this);
+
+    //  连接完成信号
+    connect(m_prefetchWatcher, &QFutureWatcher<bool>::finished,
+        this, &DayReportParser::onPrefetchFinished);
 }
 
 DayReportParser::~DayReportParser()
 {
+    if (m_isPrefetching) {
+        qDebug() << "等待预查询完成...";
+        m_prefetchFuture.waitForFinished();
+    }
     delete m_fetcher;
 }
 
+void DayReportParser::onPrefetchFinished()
+{
+    m_isPrefetching = false;
+
+    bool success = m_prefetchFuture.result();
+
+    if (success) {
+        qDebug() << " 预查询完成：已缓存" << m_dataCache.size() << "个数据点";
+    }
+    else {
+        qWarning() << " 预查询失败";
+    }
+}
+
+void DayReportParser::clearCache()
+{
+    qDebug() << "清空缓存：" << m_dataCache.size() << "个数据点";
+    m_dataCache.clear();
+}
+
+// 从任务获取时间
+QTime DayReportParser::getTaskTime(const QueryTask& task)
+{
+    int row = task.row;
+    int totalCols = m_model->columnCount();
+
+    // 在同一行查找时间标记
+    for (int col = 0; col < totalCols; ++col) {
+        CellData* cell = m_model->getCell(row, col);
+        if (cell && cell->cellType == CellData::TimeMarker) {
+            QString timeStr = cell->value.toString();
+            QTime time = QTime::fromString(timeStr, "HH:mm:ss");
+            if (!time.isValid()) {
+                time = QTime::fromString(timeStr, "HH:mm");
+            }
+            return time;
+        }
+    }
+
+    return QTime();
+}
+
+
+
 // ===== 核心流程 =====
+bool DayReportParser::findInCache(const QString& rtuId, int64_t timestamp, float& value)
+{
+    CacheKey key;
+    key.rtuId = rtuId;
+    key.timestamp = timestamp;
+
+    // 1. 精确匹配
+    if (m_dataCache.contains(key)) {
+        value = m_dataCache[key];
+        return true;
+    }
+
+    // 2. 容错匹配：±60秒内的最近时间点
+    const int64_t tolerance = 60000;  // 60秒（毫秒）
+
+    for (auto it = m_dataCache.constBegin(); it != m_dataCache.constEnd(); ++it) {
+        if (it.key().rtuId == rtuId) {
+            int64_t diff = qAbs(it.key().timestamp - timestamp);
+            if (diff <= tolerance) {
+                value = it.value();
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
+
+bool DayReportParser::executeSingleQuery(const QString& rtuList,
+    const QTime& startTime,
+    const QTime& endTime,
+    int intervalSeconds)
+{
+    // 构造查询地址
+    QString query = QString("%1@%2 %3~%2 %4#%5")
+        .arg(rtuList)
+        .arg(m_baseDate)
+        .arg(startTime.toString("HH:mm:ss"))
+        .arg(endTime.addSecs(60).toString("HH:mm:ss"))  // 结束时间+1分钟
+        .arg(intervalSeconds);
+
+    qDebug() << "  查询地址：" << query;
+
+    try {
+        // 执行查询
+        auto dataMap = m_fetcher->fetchDataFromAddress(query.toStdString());
+
+        qDebug() << "  返回时间点数量：" << dataMap.size();
+
+        if (dataMap.empty()) {
+            qWarning() << "  查询无数据";
+            return false;
+        }
+
+        // 解析RTU列表
+        QStringList rtuArray = rtuList.split(",");
+
+        // 存入缓存
+        for (auto it = dataMap.begin(); it != dataMap.end(); ++it) {
+            int64_t timestamp = it->first;
+            const std::vector<float>& values = it->second;
+
+            for (int i = 0; i < rtuArray.size() && i < values.size(); ++i) {
+                CacheKey key;
+                key.rtuId = rtuArray[i];
+                key.timestamp = timestamp;
+
+                m_dataCache[key] = values[i];
+            }
+        }
+
+        qDebug() << QString(" 已缓存 %1 个时间点 × %2 个RTU = %3 个值")
+            .arg(dataMap.size())
+            .arg(rtuArray.size())
+            .arg(m_dataCache.size());
+
+        return true;
+    }
+    catch (const std::exception& e) {
+        qWarning() << "  查询失败：" << e.what();
+        return false;
+    }
+}
+
+bool DayReportParser::shouldMergeBlocks(const TimeBlock& block1, const TimeBlock& block2)
+{
+    // 计算两个块之间的间隔
+    int gapMinutes = block1.endTime.secsTo(block2.startTime) / 60;
+
+    // 经验阈值：间隔超过4小时（240分钟），就不合并
+    const int MERGE_THRESHOLD_MINUTES = 2 * 60;
+
+    bool shouldMerge = gapMinutes < MERGE_THRESHOLD_MINUTES;
+
+    if (shouldMerge) {
+        qDebug() << QString("  → 间隔%1分钟 < %2分钟，合并")
+            .arg(gapMinutes).arg(MERGE_THRESHOLD_MINUTES);
+    }
+    else {
+        qDebug() << QString("  → 间隔%1分钟 >= %2分钟，不合并")
+            .arg(gapMinutes).arg(MERGE_THRESHOLD_MINUTES);
+    }
+
+    return shouldMerge;
+}
+
+QList<DayReportParser::TimeBlock> DayReportParser::identifyTimeBlocks()
+{
+    QList<TimeBlock> blocks;
+
+    if (m_queryTasks.isEmpty()) {
+        return blocks;
+    }
+
+    // 按时间排序
+    QList<QPair<QTime, int>> sortedTasks;
+
+    for (int i = 0; i < m_queryTasks.size(); ++i) {
+        QTime time = getTaskTime(m_queryTasks[i]);  //  使用新方法
+        if (time.isValid()) {
+            sortedTasks.append(qMakePair(time, i));
+        }
+    }
+
+    std::sort(sortedTasks.begin(), sortedTasks.end(),
+        [](const QPair<QTime, int>& a, const QPair<QTime, int>& b) {
+            return a.first < b.first;
+        });
+
+    if (sortedTasks.isEmpty()) {
+        return blocks;
+    }
+
+    // 识别连续块
+    TimeBlock currentBlock;
+    currentBlock.startTime = sortedTasks[0].first;
+    currentBlock.endTime = sortedTasks[0].first;
+    currentBlock.taskIndices.append(sortedTasks[0].second);
+
+    const int CONTINUITY_THRESHOLD = 5 * 60;  // 5分钟
+
+    for (int i = 1; i < sortedTasks.size(); ++i) {
+        QTime time = sortedTasks[i].first;
+        int taskIdx = sortedTasks[i].second;
+        int gapSeconds = currentBlock.endTime.secsTo(time);
+
+        if (gapSeconds <= CONTINUITY_THRESHOLD) {
+            currentBlock.endTime = time;
+            currentBlock.taskIndices.append(taskIdx);
+        }
+        else {
+            blocks.append(currentBlock);
+            currentBlock = TimeBlock();
+            currentBlock.startTime = time;
+            currentBlock.endTime = time;
+            currentBlock.taskIndices.append(taskIdx);
+        }
+    }
+
+    blocks.append(currentBlock);
+    return blocks;
+}
+
+bool DayReportParser::analyzeAndPrefetch()
+{
+    // 1. 识别时间块
+    QList<TimeBlock> blocks = identifyTimeBlocks();
+
+    if (blocks.isEmpty()) {
+        qWarning() << "未识别到有效时间块";
+        return false;
+    }
+
+    qDebug() << "识别到" << blocks.size() << "个时间块：";
+    for (int i = 0; i < blocks.size(); ++i) {
+        qDebug() << QString("  块%1: %2 ~ %3 (%4个数据点)")
+            .arg(i + 1)
+            .arg(blocks[i].startTime.toString("HH:mm"))
+            .arg(blocks[i].endTime.toString("HH:mm"))
+            .arg(blocks[i].taskIndices.size());
+    }
+
+    // 2. 收集所有唯一的RTU
+    QSet<QString> uniqueRTUs;
+    for (const QueryTask& task : m_queryTasks) {
+        uniqueRTUs.insert(task.cell->rtuId);
+    }
+    QString rtuList = uniqueRTUs.values().join(",");
+
+    qDebug() << "RTU数量：" << uniqueRTUs.size();
+
+    // 3. 决策查询策略
+    QList<TimeBlock> mergedBlocks;
+
+    if (blocks.size() == 1) {
+        // 只有一个块，直接查询
+        mergedBlocks.append(blocks[0]);
+    }
+    else {
+        // 多个块，判断是否合并
+        TimeBlock currentMerged = blocks[0];
+
+        for (int i = 1; i < blocks.size(); ++i) {
+            if (shouldMergeBlocks(currentMerged, blocks[i])) {
+                // 合并
+                qDebug() << QString("  合并块 %1~%2 和 %3~%4")
+                    .arg(currentMerged.startTime.toString("HH:mm"))
+                    .arg(currentMerged.endTime.toString("HH:mm"))
+                    .arg(blocks[i].startTime.toString("HH:mm"))
+                    .arg(blocks[i].endTime.toString("HH:mm"));
+
+                currentMerged.endTime = blocks[i].endTime;
+                currentMerged.taskIndices.append(blocks[i].taskIndices);
+            }
+            else {
+                // 不合并，保存当前块，开始新块
+                mergedBlocks.append(currentMerged);
+                currentMerged = blocks[i];
+            }
+        }
+        mergedBlocks.append(currentMerged);  // 最后一个块
+    }
+
+    qDebug() << "查询策略：" << mergedBlocks.size() << "次查询";
+
+    // 4. 执行查询
+    bool allSuccess = true;
+    for (int i = 0; i < mergedBlocks.size(); ++i) {
+        const TimeBlock& block = mergedBlocks[i];
+
+        qDebug() << QString("执行查询 %1/%2: %3 ~ %4")
+            .arg(i + 1)
+            .arg(mergedBlocks.size())
+            .arg(block.startTime.toString("HH:mm"))
+            .arg(block.endTime.toString("HH:mm"));
+
+        bool success = executeSingleQuery(rtuList,
+            block.startTime,
+            block.endTime,
+            60);  // 间隔60秒（因为Time最小单位是分钟）
+
+        if (!success) {
+            qWarning() << "查询失败";
+            allSuccess = false;
+        }
+    }
+
+    return allSuccess;
+}
+
 
 bool DayReportParser::scanAndParse()
 {
@@ -32,10 +341,11 @@ bool DayReportParser::scanAndParse()
     m_dateFound = false;
     m_baseDate.clear();
     m_currentTime.clear();
+    m_dataCache.clear();
 
-    // 第1步：查找 #Date 标记
+    // 查找 #Date 标记
     if (!findDateMarker()) {
-        QString errMsg = "错误：未找到 #Date 标记，无法确定查询日期";
+        QString errMsg = "错误：未找到 #Date 标记";
         qWarning() << errMsg;
         emit parseCompleted(false, errMsg);
         return false;
@@ -43,27 +353,49 @@ bool DayReportParser::scanAndParse()
 
     qDebug() << "基准日期:" << m_baseDate;
 
-    // 第2步：逐行解析标记
+    // 逐行解析
     int totalRows = m_model->rowCount();
-
     for (int row = 0; row < totalRows; ++row) {
         parseRow(row);
         emit parseProgress(row + 1, totalRows);
     }
 
-    // 第3步：检查结果
     if (m_queryTasks.isEmpty()) {
-        QString warnMsg = "警告：未找到任何 #d# 数据标记";
+        QString warnMsg = "警告：未找到任何数据标记";
         qWarning() << warnMsg;
         emit parseCompleted(false, warnMsg);
         return false;
     }
 
-    QString successMsg = QString("解析成功：找到 %1 个待查询单元格").arg(m_queryTasks.size());
-    qDebug() << successMsg;
-    qDebug() << "========================================";
+    qDebug() << "解析完成：找到" << m_queryTasks.size() << "个数据点";
 
-    emit parseCompleted(true, successMsg);
+    // =====  核心修改：启动后台预查询 =====
+    qDebug() << "========== 开始后台预查询 ==========";
+
+    m_isPrefetching = true;
+
+    // 在后台线程执行
+    m_prefetchFuture = QtConcurrent::run([this]() -> bool {
+        qDebug() << "[后台线程] 预查询开始...";
+        try {
+            bool result = this->analyzeAndPrefetch();
+            qDebug() << "[后台线程] 预查询" << (result ? "成功" : "失败");
+            return result;
+        }
+        catch (const std::exception& e) {
+            qWarning() << "[后台线程] 异常：" << e.what();
+            return false;
+        }
+        });
+
+    m_prefetchWatcher->setFuture(m_prefetchFuture);
+
+    //  立即返回，不阻塞UI
+    QString msg = QString("解析成功：找到 %1 个数据点，数据加载中...")
+        .arg(m_queryTasks.size());
+    emit parseCompleted(true, msg);
+
+    qDebug() << "========================================";
     return true;
 }
 
@@ -114,7 +446,6 @@ void DayReportParser::parseRow(int row)
 {
     int totalCols = m_model->columnCount();
 
-    // 从左到右扫描
     for (int col = 0; col < totalCols; ++col) {
         CellData* cell = m_model->getCell(row, col);
         if (!cell) continue;
@@ -127,236 +458,115 @@ void DayReportParser::parseRow(int row)
             QString timeStr = extractTime(text);
             m_currentTime = timeStr;
 
-            // 标记单元格类型
             cell->cellType = CellData::TimeMarker;
             cell->originalMarker = text;
-
-            // 更新显示值（去掉 #t# 前缀，只显示 HH:mm）
             cell->value = timeStr.left(5);  // "00:00:00" → "00:00"
 
-            qDebug() << QString("  行%1 列%2: 时间标记 %3 → %4")
+            qDebug() << QString("行%1 列%2: 时间标记 %3 → %4")
                 .arg(row).arg(col).arg(text).arg(m_currentTime);
         }
         // ===== 情况2：遇到 #d# 数据标记 =====
         else if (isDataMarker(text)) {
-            // 检查前置条件
             if (m_currentTime.isEmpty()) {
-                qWarning() << QString("警告：行%1列%2 缺少时间信息，跳过").arg(row).arg(col);
+                qWarning() << QString("行%1列%2 缺少时间信息，跳过").arg(row).arg(col);
                 continue;
             }
 
             QString rtuId = extractRtuId(text);
             if (rtuId.isEmpty()) {
-                qWarning() << QString("警告：行%1列%2 RTU号为空，跳过").arg(row).arg(col);
+                qWarning() << QString("行%1列%2 RTU号为空，跳过").arg(row).arg(col);
                 continue;
             }
 
-            // 标记单元格类型
+            // 标记单元格
             cell->cellType = CellData::DataMarker;
             cell->originalMarker = text;
             cell->rtuId = rtuId;
 
-            // 构建查询地址
-            QDateTime startTime = constructDateTime(m_baseDate, m_currentTime);
-            QString queryPath = buildQueryPath(rtuId, startTime);
-
-            cell->queryPath = queryPath;
-
-            // 添加到查询任务列表
+            // 添加到任务列表（不再构建复杂的queryPath）
             QueryTask task;
             task.cell = cell;
             task.row = row;
             task.col = col;
-            task.queryPath = queryPath;
+            task.queryPath = "";  // 新方案不需要单独的queryPath
+
             m_queryTasks.append(task);
 
-            qDebug() << QString("  行%1 列%2: 数据标记 %3 → 查询地址: %4")
-                .arg(row).arg(col).arg(text).arg(queryPath);
+            // 简化日志输出
+            qDebug() << QString("  行%1 列%2: RTU=%3, 时间=%4")
+                .arg(row).arg(col).arg(rtuId).arg(m_currentTime);
         }
     }
 }
 
-//bool DayReportParser::executeQueries(QProgressDialog* progress)
-//{
-//    if (m_queryTasks.isEmpty()) {
-//        qWarning() << "没有待查询的任务";
-//        return true; // 没有任务也算成功完成
-//    }
-//    
-//    qDebug() << "========== 开始执行查询 ==========";
-//    int successCount = 0;
-//    int failCount = 0;
-//    int total = m_queryTasks.size();
-//
-//    for (int i = 0; i < total; ++i) {
-//        // 【核心修正】在每次循环开始时检查是否已取消
-//        if (progress && progress->wasCanceled()) {
-//            qDebug() << "查询被用户取消。";
-//            return false; // 返回 false 表示被取消
-//        }
-//
-//        const QueryTask& task = m_queryTasks[i];
-//
-//        // 更新进度条文本
-//        if (progress) {
-//            progress->setLabelText(QString("正在查询: %1/%2").arg(i + 1).arg(total));
-//        }
-//
-//        try {
-//            QVariant result = querySinglePoint(task.queryPath);
-//            task.cell->value = result;
-//            task.cell->queryExecuted = true;
-//            task.cell->querySuccess = true;
-//            successCount++;
-//        }
-//        catch (const std::exception& e) {
-//            qWarning() << QString("失败: 行%1列%2 - %3").arg(task.row).arg(task.col).arg(e.what());
-//            task.cell->value = "ERROR";
-//            task.cell->queryExecuted = true;
-//            task.cell->querySuccess = false;
-//            failCount++;
-//        }
-//
-//        emit queryProgress(i + 1, total);
-//    }
-//
-//    qDebug() << "========================================";
-//    qDebug() << QString("查询完成: 成功 %1, 失败 %2").arg(successCount).arg(failCount);
-//
-//    emit queryCompleted(successCount, failCount);
-//
-//    // 通知模型刷新显示
-//    m_model->notifyDataChanged();
-//
-//    return true; // 返回 true 表示正常完成
-//}
-
 bool DayReportParser::executeQueries(QProgressDialog* progress)
 {
     if (m_queryTasks.isEmpty()) {
-        qWarning() << "没有待查询的任务";
         return true;
     }
 
-    qDebug() << "========== 开始批量查询 ==========";
+    qDebug() << "========== 开始填充数据 ==========";
 
-    // ===== 第1步：按时间分组 =====
-    QMap<QString, QVector<int>> timeGroups;
-
-    for (int i = 0; i < m_queryTasks.size(); ++i) {
-        const QueryTask& task = m_queryTasks[i];
-        QString timeKey = task.cell->queryPath.section('@', 1, 1).section('~', 0, 0);
-        timeGroups[timeKey].append(i);
+    // 如果缓存为空，重新查询
+    if (m_dataCache.isEmpty()) {
+        qWarning() << "缓存为空，重新查询...";
+        if (!analyzeAndPrefetch()) {
+            return false;
+        }
     }
-
-    qDebug() << "分组完成：" << timeGroups.size() << "个时间点";
-
-    // ===== 【修改】设置进度条范围为总任务数 =====
-    int totalTasks = m_queryTasks.size();
-    int processedTasks = 0;
 
     if (progress) {
-        progress->setRange(0, totalTasks);
-        progress->setValue(0);
+        progress->setRange(0, m_queryTasks.size());
+        progress->setLabelText("正在填充数据...");
     }
 
-    // ===== 第2步：批量查询 =====
     int successCount = 0;
     int failCount = 0;
-    int processedGroups = 0;
-    int totalGroups = timeGroups.size();
 
-    for (auto it = timeGroups.begin(); it != timeGroups.end(); ++it) {
+    for (int i = 0; i < m_queryTasks.size(); ++i) {
         if (progress && progress->wasCanceled()) {
-            qDebug() << "查询被用户取消。";
             return false;
         }
 
-        const QString& timeKey = it.key();
-        const QVector<int>& taskIndices = it.value();
+        const QueryTask& task = m_queryTasks[i];
 
-        // ===== 【修改】更新进度文本和进度值 =====
-        if (progress) {
-            progress->setLabelText(QString("正在查询: 第 %1/%2 组 (已完成 %3/%4 个数据点)")
-                .arg(processedGroups + 1)
-                .arg(totalGroups)
-                .arg(processedTasks)
-                .arg(totalTasks));
+        //  使用新方法获取时间
+        QTime time = getTaskTime(task);
+        if (!time.isValid()) {
+            task.cell->value = "N/A";
+            task.cell->queryExecuted = true;
+            task.cell->querySuccess = false;
+            failCount++;
+            continue;
         }
 
-        // 构建批量查询
-        QStringList rtuList;
-        for (int idx : taskIndices) {
-            rtuList << m_queryTasks[idx].cell->rtuId;
+        QDateTime dateTime = QDateTime(
+            QDate::fromString(m_baseDate, "yyyy-MM-dd"),
+            time
+        );
+        int64_t timestamp = dateTime.toMSecsSinceEpoch();
+
+        float value = 0.0f;
+        if (findInCache(task.cell->rtuId, timestamp, value)) {
+            task.cell->value = QString::number(value, 'f', 2);
+            task.cell->queryExecuted = true;
+            task.cell->querySuccess = true;
+            successCount++;
         }
-
-        const QueryTask& firstTask = m_queryTasks[taskIndices[0]];
-        QString queryPath = firstTask.queryPath;
-        QString rtuPart = rtuList.join(",");
-        QString timePart = queryPath.section('@', 1);
-        QString batchQuery = rtuPart + "@" + timePart;
-
-        qDebug() << "批量查询" << taskIndices.size() << "个RTU：" << batchQuery;
-
-        try {
-            auto dataMap = m_fetcher->fetchDataFromAddress(batchQuery.toStdString());
-
-            if (dataMap.empty()) {
-                qWarning() << "查询无数据";
-                for (int idx : taskIndices) {
-                    m_queryTasks[idx].cell->value = "N/A";
-                    m_queryTasks[idx].cell->queryExecuted = true;
-                    m_queryTasks[idx].cell->querySuccess = false;
-                    failCount++;
-                }
-            }
-            else {
-                auto firstEntry = dataMap.begin();
-                const std::vector<float>& values = firstEntry->second;
-
-                for (size_t i = 0; i < taskIndices.size(); ++i) {
-                    int idx = taskIndices[i];
-
-                    if (i < values.size()) {
-                        double result = static_cast<double>(values[i]);
-                        m_queryTasks[idx].cell->value = QString::number(result, 'f', 2);
-                        m_queryTasks[idx].cell->queryExecuted = true;
-                        m_queryTasks[idx].cell->querySuccess = true;
-                        successCount++;
-                    }
-                    else {
-                        m_queryTasks[idx].cell->value = "N/A";
-                        m_queryTasks[idx].cell->queryExecuted = true;
-                        m_queryTasks[idx].cell->querySuccess = false;
-                        failCount++;
-                    }
-                }
-            }
+        else {
+            task.cell->value = "N/A";
+            task.cell->queryExecuted = true;
+            task.cell->querySuccess = false;
+            failCount++;
         }
-        catch (const std::exception& e) {
-            qWarning() << "批量查询失败：" << e.what();
-            for (int idx : taskIndices) {
-                m_queryTasks[idx].cell->value = "ERROR";
-                m_queryTasks[idx].cell->queryExecuted = true;
-                m_queryTasks[idx].cell->querySuccess = false;
-                failCount++;
-            }
-        }
-
-        // ===== 【修改】更新已处理的任务数 =====
-        processedTasks += taskIndices.size();
-        processedGroups++;
 
         if (progress) {
-            progress->setValue(processedTasks);
+            progress->setValue(i + 1);
         }
-
-        emit queryProgress(processedTasks, totalTasks);
+        emit queryProgress(i + 1, m_queryTasks.size());
     }
 
-    qDebug() << "========================================";
-    qDebug() << QString("批量查询完成: 成功 %1, 失败 %2").arg(successCount).arg(failCount);
-
+    qDebug() << QString("填充完成: 成功 %1, 失败 %2").arg(successCount).arg(failCount);
     emit queryCompleted(successCount, failCount);
     m_model->notifyDataChanged();
 
@@ -366,6 +576,8 @@ bool DayReportParser::executeQueries(QProgressDialog* progress)
 void DayReportParser::restoreToTemplate()
 {
     qDebug() << "恢复到模板初始状态...";
+    // 清空缓存
+    m_dataCache.clear();
     for (const auto& task : m_queryTasks) {
         if (task.cell) {
             // 将单元格的值恢复为其原始标记文本
@@ -499,4 +711,215 @@ QDateTime DayReportParser::constructDateTime(const QString& date, const QString&
     }
 
     return result;
+}
+
+// ===== 【测试函数】验证数据对应关系 =====
+void DayReportParser::runCorrectnessTest()
+{
+    qDebug() << "";
+    qDebug() << "╔════════════════════════════════════════════════════════════╗";
+    qDebug() << "║          数据对应关系完整性测试                              ║";
+    qDebug() << "╚════════════════════════════════════════════════════════════╝";
+    qDebug() << "";
+
+    if (m_queryTasks.isEmpty()) {
+        qDebug() << "❌ 无测试数据";
+        return;
+    }
+
+    // ===== 第1步：选择前3个任务作为测试样本 =====
+    int testCount = qMin(3, m_queryTasks.size());
+    QList<QueryTask> testTasks;
+    for (int i = 0; i < testCount; ++i) {
+        testTasks.append(m_queryTasks[i]);
+    }
+
+    qDebug() << "【测试样本】选择前" << testCount << "个数据点：";
+    for (int i = 0; i < testTasks.size(); ++i) {
+        const QueryTask& task = testTasks[i];
+        QTime time = getTaskTime(task);
+        qDebug() << QString("  样本%1: 行%2列%3, RTU=%4, 时间=%5")
+            .arg(i + 1)
+            .arg(task.row + 1)
+            .arg(task.col + 1)
+            .arg(task.cell->rtuId)
+            .arg(time.toString("HH:mm:ss"));
+    }
+    qDebug() << "";
+
+    // ===== 第2步：构造单独的验证查询 =====
+    qDebug() << "【验证查询】对这3个数据点单独查询：";
+
+    QHash<QString, QHash<int64_t, float>> verificationData;  // RTU → (时间戳 → 值)
+
+    for (const QueryTask& task : testTasks) {
+        QTime time = getTaskTime(task);
+        QDateTime dateTime = constructDateTime(m_baseDate, time.toString("HH:mm:ss"));
+
+        // 单独查询这个RTU的这个时间点（前后1分钟）
+        QString verifyQuery = QString("%1@%2~%3#60")
+            .arg(task.cell->rtuId)
+            .arg(dateTime.toString("yyyy-MM-dd HH:mm:ss"))
+            .arg(dateTime.addSecs(60).toString("yyyy-MM-dd HH:mm:ss"));
+
+        try {
+            auto dataMap = m_fetcher->fetchDataFromAddress(verifyQuery.toStdString());
+
+            if (!dataMap.empty()) {
+                auto entry = dataMap.begin();
+                int64_t timestamp = entry->first;
+                float value = entry->second.empty() ? 0.0f : entry->second[0];
+
+                verificationData[task.cell->rtuId][timestamp] = value;
+
+                // 转换时间戳为可读格式
+                QDateTime dt = QDateTime::fromMSecsSinceEpoch(timestamp);
+
+                qDebug() << QString("  ✓ RTU=%1, 时间=%2, 时间戳=%3, 值=%4")
+                    .arg(task.cell->rtuId)
+                    .arg(dt.toString("HH:mm:ss"))
+                    .arg(timestamp)
+                    .arg(value, 0, 'f', 2);
+            }
+            else {
+                qDebug() << QString("  ✗ RTU=%1 查询无数据").arg(task.cell->rtuId);
+            }
+        }
+        catch (const std::exception& e) {
+            qDebug() << QString("  ✗ RTU=%1 查询失败: %2")
+                .arg(task.cell->rtuId)
+                .arg(e.what());
+        }
+    }
+    qDebug() << "";
+
+    // ===== 第3步：检查缓存中的数据 =====
+    qDebug() << "【缓存检查】查看这3个数据点是否在缓存中：";
+
+    for (const QueryTask& task : testTasks) {
+        QTime time = getTaskTime(task);
+        QDateTime dateTime = constructDateTime(m_baseDate, time.toString("HH:mm:ss"));
+        int64_t timestamp = dateTime.toMSecsSinceEpoch();
+
+        CacheKey key;
+        key.rtuId = task.cell->rtuId;
+        key.timestamp = timestamp;
+
+        if (m_dataCache.contains(key)) {
+            float cachedValue = m_dataCache[key];
+            qDebug() << QString("  ✓ 缓存命中: RTU=%1, 时间戳=%2, 缓存值=%3")
+                .arg(task.cell->rtuId)
+                .arg(timestamp)
+                .arg(cachedValue, 0, 'f', 2);
+        }
+        else {
+            qDebug() << QString("  ✗ 缓存未命中: RTU=%1, 时间戳=%2")
+                .arg(task.cell->rtuId)
+                .arg(timestamp);
+
+            // 尝试模糊查找
+            qDebug() << "    → 尝试模糊查找（±60秒）：";
+            bool foundNearby = false;
+            for (auto it = m_dataCache.constBegin(); it != m_dataCache.constEnd(); ++it) {
+                if (it.key().rtuId == task.cell->rtuId) {
+                    int64_t diff = qAbs(it.key().timestamp - timestamp);
+                    if (diff <= 60000) {  // 60秒
+                        QDateTime nearbyDt = QDateTime::fromMSecsSinceEpoch(it.key().timestamp);
+                        qDebug() << QString("      找到: 时间戳=%1 (%2), 值=%3, 偏差=%4毫秒")
+                            .arg(it.key().timestamp)
+                            .arg(nearbyDt.toString("HH:mm:ss"))
+                            .arg(it.value(), 0, 'f', 2)
+                            .arg(diff);
+                        foundNearby = true;
+                    }
+                }
+            }
+            if (!foundNearby) {
+                qDebug() << "      未找到相近的缓存数据";
+            }
+        }
+    }
+    qDebug() << "";
+
+    // ===== 第4步：对比验证值 vs 缓存值 =====
+    qDebug() << "【对比验证】单独查询的值 vs 批量查询缓存的值：";
+
+    bool allMatch = true;
+    for (const QueryTask& task : testTasks) {
+        QTime time = getTaskTime(task);
+        QDateTime dateTime = constructDateTime(m_baseDate, time.toString("HH:mm:ss"));
+        int64_t timestamp = dateTime.toMSecsSinceEpoch();
+
+        // 从验证查询获取的值
+        float verifyValue = 0.0f;
+        bool hasVerifyValue = false;
+        if (verificationData.contains(task.cell->rtuId)) {
+            auto& timeMap = verificationData[task.cell->rtuId];
+            if (!timeMap.isEmpty()) {
+                verifyValue = timeMap.begin().value();   // 取第一个值
+                hasVerifyValue = true;
+            }
+        }
+
+        // 从缓存获取的值
+        float cachedValue = 0.0f;
+        bool hasCachedValue = findInCache(task.cell->rtuId, timestamp, cachedValue);
+
+        if (hasVerifyValue && hasCachedValue) {
+            float diff = qAbs(verifyValue - cachedValue);
+            bool match = diff < 0.01f;  // 允许0.01的误差
+
+            if (match) {
+                qDebug() << QString("  ✓ 匹配: RTU=%1, 验证值=%2, 缓存值=%3")
+                    .arg(task.cell->rtuId)
+                    .arg(verifyValue, 0, 'f', 2)
+                    .arg(cachedValue, 0, 'f', 2);
+            }
+            else {
+                qDebug() << QString("  ✗ 不匹配: RTU=%1, 验证值=%2, 缓存值=%3, 差异=%4")
+                    .arg(task.cell->rtuId)
+                    .arg(verifyValue, 0, 'f', 2)
+                    .arg(cachedValue, 0, 'f', 2)
+                    .arg(diff, 0, 'f', 4);
+                allMatch = false;
+            }
+        }
+        else {
+            qDebug() << QString("  ✗ 数据不完整: RTU=%1, 有验证值=%2, 有缓存值=%3")
+                .arg(task.cell->rtuId)
+                .arg(hasVerifyValue ? "是" : "否")
+                .arg(hasCachedValue ? "是" : "否");
+            allMatch = false;
+        }
+    }
+    qDebug() << "";
+
+    // ===== 第5步：检查单元格填充结果 =====
+    qDebug() << "【单元格检查】查看最终填充到Excel的值：";
+
+    for (const QueryTask& task : testTasks) {
+        QString cellValue = task.cell->value.toString();
+        bool isExecuted = task.cell->queryExecuted;
+        bool isSuccess = task.cell->querySuccess;
+
+        qDebug() << QString("  单元格[%1,%2]: RTU=%3, 显示值=%4, 已执行=%5, 成功=%6")
+            .arg(task.row + 1)
+            .arg(task.col + 1)
+            .arg(task.cell->rtuId)
+            .arg(cellValue)
+            .arg(isExecuted ? "是" : "否")
+            .arg(isSuccess ? "是" : "否");
+    }
+    qDebug() << "";
+
+    // ===== 最终结论 =====
+    qDebug() << "╔════════════════════════════════════════════════════════════╗";
+    if (allMatch) {
+        qDebug() << "║   测试通过：数据对应关系正确！                            ║";
+    }
+    else {
+        qDebug() << "║   测试失败：发现数据不匹配！                              ║";
+    }
+    qDebug() << "╚════════════════════════════════════════════════════════════╝";
+    qDebug() << "";
 }

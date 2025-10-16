@@ -105,19 +105,16 @@ public:
     const QVector<double>& getAllColumnWidths() const;
     void clearSizes();
 
-    // 数据绑定
-    void resolveDataBindings();
-
     QFont ensureFontAvailable(const QFont& requestedFont) const;
 
 signals:
     void cellChanged(int row, int col);
+    void dataLoadCompleted(bool success, QString message);
 
 private:
     QSet<QString> getCurrentBindings() const;     // 获取当前所有绑定标记
     QSet<QPoint> getCurrentFormulas() const;      // 获取当前所有公式位置
     QList<QString> getNewBindings() const;        // 获取新增的绑定标记
-    void refreshBindingsOnly(const QList<QString>& newBindings);  // 只刷新指定绑定
 
 private:
     bool loadFromExcelFile(const QString& fileName);
