@@ -62,7 +62,7 @@ void MainWindow::setupToolBar()
     m_toolBar->addSeparator();
 
     m_toolBar->addAction("刷新数据", this, &MainWindow::onRefreshData);
-    //m_toolBar->addAction("还原配置", this, &MainWindow::onRestoreConfig);
+    m_toolBar->addAction("还原配置", this, &MainWindow::onRestoreConfig);
     m_toolBar->addSeparator();
 
     // 工具操作
@@ -656,7 +656,7 @@ void MainWindow::onInsertColumn()
 {
     if (m_currentIndex.isValid()) {
         int col = m_currentIndex.column();
-        m_dataModel->insertColumns(col, 1);
+        m_dataModel->insertColumns(col + 1, 1);
     }
 }
 
@@ -761,6 +761,30 @@ void MainWindow::onRefreshData()
         // 对于普通Excel等其他模式，通常操作很快，不需要进度条
         // 直接调用刷新即可，模型内部会处理相应的弹窗逻辑
         m_dataModel->refreshReportData(nullptr);
+    }
+}
+
+void MainWindow::onRestoreConfig()
+{
+    if (m_dataModel->rowCount() == 0 || m_dataModel->columnCount() == 0) {
+        QMessageBox::information(this, "提示", "当前没有可还原的配置。");
+        return;
+    }
+
+    if (m_dataModel->isFirstRefresh()) {
+        QMessageBox::information(this, "提示", "当前已经是配置文件状态，无需还原。");
+        return;
+    }
+
+    // 弹出确认对话框
+    QMessageBox::StandardButton reply;
+    reply = QMessageBox::question(this, "确认", "是否要将报表还原到模板的初始状态？\n\n所有已填充的数据和计算结果都将被清除。",
+        QMessageBox::Yes | QMessageBox::No);
+
+    if (reply == QMessageBox::Yes) {
+        // 调用数据模型的还原函数
+        m_dataModel->restoreToTemplate();
+        QMessageBox::information(this, "完成", "配置已成功还原。");
     }
 }
 

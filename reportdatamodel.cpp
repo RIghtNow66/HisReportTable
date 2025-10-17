@@ -86,6 +86,13 @@ void ReportDataModel::recalculateAllFormulas()
 {
     qDebug() << "开始增量计算公式...";
 
+    for (auto it = m_cells.begin(); it != m_cells.end(); ++it) {
+        CellData* cell = it.value();
+        if (cell && cell->hasFormula) {
+            cell->formulaCalculated = false;
+        }
+    }
+
     // ===== 【修改】按依赖关系排序计算 =====
     // 简单策略：多次遍历，直到没有新计算的公式
     int maxIterations = 10;  // 防止循环依赖导致死循环
@@ -125,7 +132,7 @@ void ReportDataModel::recalculateAllFormulas()
     notifyDataChanged();
 }
 
-// ===== 新增：统一的数据刷新入口 =====
+// =====统一的数据刷新入口 =====
 bool ReportDataModel::refreshReportData(QProgressDialog* progress)
 {
     // ===== 【步骤1】检测变化类型 =====
@@ -256,6 +263,7 @@ bool ReportDataModel::refreshReportData(QProgressDialog* progress)
         // 不需要查询，直接标记为成功
         completedSuccessfully = true;
     }
+    recalculateAllFormulas(); 
 
     // 无论是否查询，都计算公式
     if (m_reportType == DAY_REPORT && m_dayParser) {

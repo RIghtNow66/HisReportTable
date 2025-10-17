@@ -50,7 +50,7 @@ private slots:
     void onDeleteColumn();
 
     void onRefreshData();  // 保留，但实现会改变
-    //void onRestoreConfig();
+    void onRestoreConfig();
 
     void onFillDownFormula();
 
