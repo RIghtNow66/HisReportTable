@@ -18,6 +18,9 @@ SOURCES += \
 	EnhancedTableView.cpp\
 	TaosDataFetcher.cpp\
 	DayReportParser.cpp\
+	BaseReportParser.cpp\
+	MonthReportParser.cpp\
+	
 	
 
 HEADERS +=\
@@ -29,6 +32,8 @@ HEADERS +=\
 	EnhancedTableView.h\
 	TaosDataFetcher.h\
 	DayReportParser.h\
+	BaseReportParser.h\
+	MonthReportParser.h\
 
 
 RESOURCES += ReportTable.qrc

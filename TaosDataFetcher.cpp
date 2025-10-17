@@ -38,9 +38,10 @@ std::map<int64_t, std::vector<float>> TaosDataFetcher::fetchDataFromAddress(cons
         //std::map<int64_t, vector<float>> result = tdb->read(ycnoList, startTime, endTime);
         if (result.empty())
         {
-            QMessageBox::warning(NULL, "警告", "未获取到有效数据，请检查taos连接", QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes);
+            //QMessageBox::warning(NULL, "警告", "未获取到有效数据，请检查taos连接", QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes);
+            qWarning() << "未获取到有效数据，请检查taos连接";
         }
-        return tdb->read(ycnoList, startTime, endTime, interval);
+        return result;
     }
     catch (const std::exception& e) {
         throw std::runtime_error(std::string("数据查询失败: ") + e.what());

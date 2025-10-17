@@ -699,34 +699,38 @@ void MainWindow::onRefreshData()
 {
     if (m_dataModel->getAllCells().isEmpty()) {
         QMessageBox::information(this, "提示", "当前没有可刷新的数据。\n\n请先通过 [导入] 按钮加载一个报表模板。");
-        return; // 直接结束，不执行后续逻辑
+        return;
     }
 
     ReportDataModel::ReportType type = m_dataModel->getReportType();
 
-    // 日报模式需要特殊处理，因为它有耗时的查询操作
-    if (type == ReportDataModel::DAY_REPORT) {
-        DayReportParser* parser = m_dataModel->getDayParser();
+    // 日报和月报模式需要特殊处理，因为它们有耗时的查询操作
+    if (type == ReportDataModel::DAY_REPORT || type == ReportDataModel::MONTH_REPORT) {
+        BaseReportParser* parser = m_dataModel->getParser();
         if (!parser || !parser->isValid()) {
-            QMessageBox::warning(this, "错误", "日报解析器未初始化或模板无效！");
+            QMessageBox::warning(this, "错误", "报表解析器未初始化或模板无效！");
             return;
         }
 
         // 1. 创建进度对话框
-        QProgressDialog progress("正在准备数据...", "取消", 0, 0, this);  // 初始不确定范围
+        QProgressDialog progress("正在准备数据...", "取消", 0, 0, this);
         progress.setWindowModality(Qt::WindowModal);
         progress.setMinimumDuration(500);
 
+        connect(parser, &BaseReportParser::databaseError,
+            this, [this](QString errorMsg) {
+                QMessageBox::warning(this, "数据库错误", errorMsg);
+            }, Qt::QueuedConnection);
+
         bool needsPrefetch = parser->getPendingQueryCount() > 0 &&
             !parser->isPrefetching();
-
 
         if (needsPrefetch) {
             // 连接预查询进度
             progress.setLabelText("正在预查询数据...");
             progress.setRange(0, 0);  // 不确定范围（滚动条模式）
 
-            connect(parser, &DayReportParser::prefetchProgress,
+            connect(parser, &BaseReportParser::prefetchProgress,
                 &progress, [&progress](int current, int total) {
                     if (progress.maximum() != total) {
                         progress.setRange(0, total);
@@ -740,17 +744,17 @@ void MainWindow::onRefreshData()
             int queryCount = parser->getPendingQueryCount();
             if (queryCount > 0) {
                 progress.setRange(0, queryCount);
-                connect(parser, &DayReportParser::queryProgress,
+                connect(parser, &BaseReportParser::queryProgress,
                     &progress, &QProgressDialog::setValue);
             }
         }
 
         // 3. 调用模型的刷新函数，将进度条传入
-        // 模型内部会决定是否执行查询，如果执行，解析器就会更新我们这里的进度条
         bool completed = m_dataModel->refreshReportData(&progress);
 
         // 断开所有连接
         disconnect(parser, nullptr, &progress, nullptr);
+        disconnect(parser, &BaseReportParser::databaseError, this, nullptr);
 
         if (!completed && progress.wasCanceled()) {
             QMessageBox::warning(this, "已取消", "数据刷新操作已被用户取消。");
@@ -759,7 +763,6 @@ void MainWindow::onRefreshData()
     }
     else {
         // 对于普通Excel等其他模式，通常操作很快，不需要进度条
-        // 直接调用刷新即可，模型内部会处理相应的弹窗逻辑
         m_dataModel->refreshReportData(nullptr);
     }
 }
@@ -771,7 +774,7 @@ void MainWindow::onRestoreConfig()
         return;
     }
 
-    if (m_dataModel->isFirstRefresh()) {
+    if (m_dataModel->isFirstRefresh() && !m_dataModel->hasExecutedQueries()) {
         QMessageBox::information(this, "提示", "当前已经是配置文件状态，无需还原。");
         return;
     }

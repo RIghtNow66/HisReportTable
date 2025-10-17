@@ -1,7 +1,4 @@
-﻿#include "reportdatamodel.h"
-#include "formulaengine.h"
-#include "excelhandler.h" // 用于文件操作
-#include <QColor>
+﻿#include <QColor>
 #include <QFont>
 #include <QPoint>
 #include <QHash>
@@ -16,7 +13,13 @@
 #include <cmath>               // 用于 std::isnan, std::isinf
 #include <QMessageBox>
 
+#include "reportdatamodel.h"
+#include "formulaengine.h"
+#include "excelhandler.h" // 用于文件操作
+#include "BaseReportParser.h"
+#include "MonthReportParser.h"
 #include "DayReportParser.h"
+
 // QXlsx相关（检查是否已包含）
 #include "xlsxdocument.h"      // 用于 QXlsx::Document
 #include "xlsxcellrange.h"     // 用于 QXlsx::CellRange
@@ -30,13 +33,15 @@ ReportDataModel::ReportDataModel(QObject* parent)
     , m_maxCol(26)  // 默认初始列数 (A-Z)
     , m_formulaEngine(new FormulaEngine(this))
     , m_reportType(NORMAL_EXCEL) // 默认是普通Excel
-    , m_dayParser(nullptr)
+    , m_parser(nullptr)
 {
 }
 
 ReportDataModel::~ReportDataModel()
 {
     clearAllCells();
+    delete m_parser;  // 新增：释放解析器
+    m_parser = nullptr;
 }
 
 // ===== 统一的模板加载入口 =====
@@ -58,18 +63,26 @@ bool ReportDataModel::loadReportTemplate(const QString& fileName)
     if (baseName.startsWith("##Day_", Qt::CaseInsensitive)) {
         m_reportType = DAY_REPORT;
         qDebug() << "检测到日报模板，开始解析...";
-        m_dayParser = new DayReportParser(this, this);
-        // scanAndParse 会识别模板中的标记
-        if (!m_dayParser->scanAndParse()) {
-            // 如果解析失败（例如缺少#Date），清理并报错
+
+        // 创建日报解析器
+        m_parser = new DayReportParser(this, this);
+
+        if (!m_parser->scanAndParse()) {
             clearAllCells();
             return false;
         }
     }
-    else if (baseName.startsWith("##Month_", Qt::CaseInsensitive)) {
+    else if (baseName.startsWith("##Month_", Qt::CaseInsensitive)) {  // 新增
         m_reportType = MONTH_REPORT;
-        qDebug() << "检测到月报模板 (功能待实现)...";
-        // 预留月报解析器逻辑
+        qDebug() << "检测到月报模板，开始解析...";
+
+        // 创建月报解析器
+        m_parser = new MonthReportParser(this, this);
+
+        if (!m_parser->scanAndParse()) {
+            clearAllCells();
+            return false;
+        }
     }
     else {
         m_reportType = NORMAL_EXCEL;
@@ -162,9 +175,8 @@ bool ReportDataModel::refreshReportData(QProgressDialog* progress)
     }
 
     case BINDING_ONLY: {
-        // 对于日报模式，绑定是 #d# 标记
         int newMarkerCount = 0;
-        if (m_reportType == DAY_REPORT && m_dayParser) {
+        if (m_reportType == DAY_REPORT && m_parser) {
             // 计算新增的 #d# 标记数量
             for (auto it = m_cells.constBegin(); it != m_cells.constEnd(); ++it) {
                 const CellData* cell = it.value();
@@ -242,8 +254,8 @@ bool ReportDataModel::refreshReportData(QProgressDialog* progress)
     // 根据 needQuery 决定是否查询
     if (needQuery) {
         // 需要查询数据
-        if (m_reportType == DAY_REPORT && m_dayParser) {
-            completedSuccessfully = m_dayParser->executeQueries(progress);
+        if ((m_reportType == DAY_REPORT || m_reportType == MONTH_REPORT) && m_parser) {
+            completedSuccessfully = m_parser->executeQueries(progress);
 
             // 统计实际成功的数据点
             for (auto it = m_cells.constBegin(); it != m_cells.constEnd(); ++it) {
@@ -266,8 +278,8 @@ bool ReportDataModel::refreshReportData(QProgressDialog* progress)
     recalculateAllFormulas(); 
 
     // 无论是否查询，都计算公式
-    if (m_reportType == DAY_REPORT && m_dayParser) {
-        int totalTasks = m_dayParser->getPendingQueryCount();
+    if ((m_reportType == DAY_REPORT || m_reportType == MONTH_REPORT) && m_parser) {
+        int totalTasks = m_parser->getPendingQueryCount();
         if (totalTasks > 0) {
             double successRate = static_cast<double>(actualSuccessCount) / totalTasks;
             if (successRate >= 0.5) {  // 至少50%的数据成功
@@ -291,8 +303,8 @@ bool ReportDataModel::refreshReportData(QProgressDialog* progress)
 
 void ReportDataModel::restoreToTemplate()
 {
-    if (m_reportType == DAY_REPORT && m_dayParser) {
-        m_dayParser->restoreToTemplate();
+    if ((m_reportType == DAY_REPORT || m_reportType == MONTH_REPORT) && m_parser) {
+        m_parser->restoreToTemplate();
     }
 
     // 对于普通Excel，恢复公式单元格显示公式文本
@@ -304,7 +316,7 @@ void ReportDataModel::restoreToTemplate()
         }
     }
 
-    // ===== 【新增】清空快照，下次刷新会被视为首次刷新 =====
+    // ===== 清空快照，下次刷新会被视为首次刷新 =====
     m_lastSnapshot.bindingKeys.clear();
     m_lastSnapshot.formulaCells.clear();
     m_lastSnapshot.dataMarkerCells.clear();
@@ -317,8 +329,25 @@ ReportDataModel::ReportType ReportDataModel::getReportType() const {
     return m_reportType;
 }
 
-DayReportParser* ReportDataModel::getDayParser() const {
-    return m_dayParser;
+BaseReportParser* ReportDataModel::getParser() const {
+    return m_parser;
+}
+
+bool ReportDataModel::hasExecutedQueries() const
+{
+    if (m_reportType != DAY_REPORT && m_reportType != MONTH_REPORT) {
+        return false;
+    }
+
+    // 检查是否有数据标记被执行过查询
+    for (auto it = m_cells.constBegin(); it != m_cells.constEnd(); ++it) {
+        const CellData* cell = it.value();
+        if (cell && cell->cellType == CellData::DataMarker && cell->queryExecuted) {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 void ReportDataModel::notifyDataChanged() {
@@ -759,15 +788,15 @@ bool ReportDataModel::saveToExcel(const QString& fileName, ExportMode mode)
 
 void ReportDataModel::clearAllCells()
 {
-    if (m_cells.isEmpty() && !m_dayParser) return;
+    if (m_cells.isEmpty() && !m_parser) return;
 
     beginResetModel();
     qDeleteAll(m_cells);
     m_cells.clear();
     clearSizes();
 
-    delete m_dayParser;
-    m_dayParser = nullptr;
+    delete m_parser;
+    m_parser = nullptr;
 
     m_reportType = NORMAL_EXCEL;
     m_reportName.clear();

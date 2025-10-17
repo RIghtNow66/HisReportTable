@@ -18,8 +18,10 @@ inline uint qHash(const QPoint& key, uint seed = 0) noexcept
     return qHash(qMakePair(key.x(), key.y()), seed);  // 改用 qMakePair
 }
 
-class FormulaEngine;
+class BaseReportParser;
+class MonthReportParser;
 class DayReportParser;
+class FormulaEngine;
 class QProgressDialog;
 
 class ReportDataModel : public QAbstractTableModel
@@ -58,7 +60,7 @@ public:
     void restoreToTemplate(); // 新增函数
 
     ReportType getReportType() const;
-    DayReportParser* getDayParser() const; // 仅用于日报
+    BaseReportParser* getParser() const;
     void notifyDataChanged();
 
     //  添加模式管理接口
@@ -107,9 +109,11 @@ public:
 
     QFont ensureFontAvailable(const QFont& requestedFont) const;
 
+    bool hasExecutedQueries() const;
+
 signals:
     void cellChanged(int row, int col);
-    void dataLoadCompleted(bool success, QString message);
+    //void dataLoadCompleted(bool success, QString message);
 
 private:
     QSet<QString> getCurrentBindings() const;     // 获取当前所有绑定标记
@@ -131,8 +135,7 @@ private:
     QString m_reportName;                                     // 报表名称
 
     ReportType m_reportType;
-    DayReportParser* m_dayParser;
-    // 预留: MonthReportParser* m_monthParser;
+    BaseReportParser* m_parser;
 
     struct RefreshSnapshot {
         QSet<QString> bindingKeys;     // 上次刷新时的绑定标记集合
