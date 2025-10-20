@@ -9,6 +9,7 @@
 #include <stdexcept>
 #include <QProgressDialog>
 #include <QtConcurrent>
+#include <QVariant>
 
 MonthReportParser::MonthReportParser(ReportDataModel* model, QObject* parent)
     : BaseReportParser(model, parent)
@@ -53,6 +54,8 @@ bool MonthReportParser::scanAndParse()
     }
 
     qDebug() << "解析完成：找到" << m_queryTasks.size() << "个数据点";
+
+    collectActualDays();
 
     // 启动后台预查询
     qDebug() << "========== 开始后台预查询 ==========";
@@ -455,6 +458,119 @@ int MonthReportParser::extractDay(const QString& text)
     return day;
 }
 
+// 收集实际日期
+void MonthReportParser::collectActualDays()
+{
+    m_actualDays.clear();
+
+    qDebug() << "开始收集月报实际日期...";
+
+    for (int row = 0; row < m_model->rowCount(); ++row) {
+        for (int col = 0; col < m_model->columnCount(); ++col) {
+            CellData* cell = m_model->getCell(row, col);
+            if (cell && cell->cellType == CellData::TimeMarker) {
+                QString dayStr = cell->value.toString();
+                bool ok;
+                int day = dayStr.toInt(&ok);
+
+                if (ok && day >= 1 && day <= 31) {
+                    QString fullDate = QString("%1-%2").arg(m_baseYearMonth).arg(day, 2, 10, QChar('0'));
+                    QDate date = QDate::fromString(fullDate, "yyyy-MM-dd");
+
+                    if (date.isValid()) {
+                        m_actualDays.insert(day);
+                    }
+                    else {
+                        qWarning() << QString("跳过无效日期：%1").arg(fullDate);
+                    }
+                }
+            }
+        }
+    }
+
+    QList<int> sortedDays = m_actualDays.values();
+    std::sort(sortedDays.begin(), sortedDays.end());
+
+    QString daysStr;
+    for (int i = 0; i < sortedDays.size(); ++i) {
+        if (i > 0) daysStr += ", ";
+        daysStr += QString::number(sortedDays[i]);
+    }
+
+    qDebug() << QString("收集到 %1 个有效日期：[%2]")
+        .arg(m_actualDays.size())
+        .arg(daysStr);
+}
+
+
+// 获取最小日期
+int MonthReportParser::getMinDay() const
+{
+    if (m_actualDays.isEmpty()) return 1;
+    return *std::min_element(m_actualDays.begin(), m_actualDays.end());
+}
+
+// 获取最大日期
+int MonthReportParser::getMaxDay() const
+{
+    if (m_actualDays.isEmpty()) return 1;
+    return *std::max_element(m_actualDays.begin(), m_actualDays.end());
+}
+
+// 识别时间块（月报版本）
+QList<BaseReportParser::TimeBlock> MonthReportParser::identifyTimeBlocks()
+{
+    QList<TimeBlock> blocks;
+
+    if (m_actualDays.isEmpty()) {
+        qWarning() << "未找到任何有效日期标记";
+        return blocks;
+    }
+
+    int minDay = getMinDay();
+    int maxDay = getMaxDay();
+
+    QString startDate = QString("%1-%2").arg(m_baseYearMonth).arg(minDay, 2, 10, QChar('0'));
+    QString endDate = QString("%1-%2").arg(m_baseYearMonth).arg(maxDay, 2, 10, QChar('0'));
+
+    qDebug() << QString("月报查询范围：%1 ~ %2").arg(startDate).arg(endDate);
+
+    QTime baseTime = QTime::fromString(m_baseTime, "HH:mm:ss");
+    QTime endTime = baseTime.addSecs(60);
+
+    TimeBlock block;
+    block.startTime = baseTime;
+    block.endTime = endTime;
+    block.startDate = startDate;
+    block.endDate = endDate;
+
+    m_currentQueryStartDate = startDate;
+    m_currentQueryEndDate = endDate;
+
+    blocks.append(block);
+
+    qDebug() << QString("生成查询块：%1 %2 ~ %3 %4")
+        .arg(startDate)
+        .arg(baseTime.toString("HH:mm:ss"))
+        .arg(endDate)
+        .arg(endTime.toString("HH:mm:ss"));
+
+    return blocks;
+}
+
+
+// 实现日期范围获取
+bool MonthReportParser::getDateRange(QString& startDate, QString& endDate)
+{
+    if (m_currentQueryStartDate.isEmpty() || m_currentQueryEndDate.isEmpty()) {
+        return false;
+    }
+
+    startDate = m_currentQueryStartDate;
+    endDate = m_currentQueryEndDate;
+    return true;
+}
+
 void MonthReportParser::runCorrectnessTest()
 {
     qDebug() << "";
@@ -464,7 +580,7 @@ void MonthReportParser::runCorrectnessTest()
     qDebug() << "";
 
     if (m_queryTasks.isEmpty()) {
-        qDebug() << "❌ 无测试数据";
+        qDebug() << " 无测试数据";
         return;
     }
 

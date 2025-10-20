@@ -42,19 +42,12 @@ BaseReportParser::~BaseReportParser()
         if (!m_prefetchFuture.isFinished()) {
             qDebug() << "等待后台线程退出（最多3秒）...";
 
-            QEventLoop loop;
-            QTimer::singleShot(3000, &loop, &QEventLoop::quit);
-
-            QTimer checkTimer;
-            checkTimer.setInterval(100);
-            connect(&checkTimer, &QTimer::timeout, [&]() {
-                if (m_prefetchFuture.isFinished()) {
-                    loop.quit();
-                }
-                });
-            checkTimer.start();
-
-            loop.exec();
+            // 使用 QDeadlineTimer 实现超时
+            QDeadlineTimer deadline(3000);
+            while (!m_prefetchFuture.isFinished() && !deadline.hasExpired()) {
+                QThread::msleep(50);  // 每50ms检查一次
+                QCoreApplication::processEvents();  // 处理信号
+            }
 
             if (!m_prefetchFuture.isFinished()) {
                 qWarning() << "后台线程未能及时退出，强制析构";
@@ -133,13 +126,31 @@ bool BaseReportParser::executeSingleQuery(const QString& rtuList,
     const QTime& endTime,
     int intervalSeconds)
 {
-    // 构造查询地址
-    QString query = QString("%1@%2 %3~%2 %4#%5")
-        .arg(rtuList)
-        .arg(m_baseDate)
-        .arg(startTime.toString("HH:mm:ss"))
-        .arg(endTime.addSecs(60).toString("HH:mm:ss"))
-        .arg(intervalSeconds);
+    // 【修改】支持日期范围查询（月报）
+    QString query;
+
+    // 检查是否为月报查询（子类会传入完整的 TimeBlock）
+    // 这里需要通过虚函数获取日期信息
+    QString startDateStr, endDateStr;
+    if (getDateRange(startDateStr, endDateStr)) {
+        // 月报模式：构建带日期的查询
+        query = QString("%1@%2 %3~%4 %5#%6")
+            .arg(rtuList)
+            .arg(startDateStr)                          // 2025-07-10
+            .arg(startTime.toString("HH:mm:ss"))        // 08:30:00
+            .arg(endDateStr)                            // 2025-07-20
+            .arg(endTime.toString("HH:mm:ss"))          // 08:31:00
+            .arg(intervalSeconds);
+    }
+    else {
+        // 日报模式：原有逻辑
+        query = QString("%1@%2 %3~%2 %4#%5")
+            .arg(rtuList)
+            .arg(m_baseDate)
+            .arg(startTime.toString("HH:mm:ss"))
+            .arg(endTime.addSecs(60).toString("HH:mm:ss"))
+            .arg(intervalSeconds);
+    }
 
     qDebug() << "  查询地址：" << query;
 
@@ -186,6 +197,15 @@ bool BaseReportParser::executeSingleQuery(const QString& rtuList,
         emit databaseError(QString("数据查询失败: %1").arg(e.what()));
         return false;
     }
+}
+
+// 虚函数：获取日期范围（月报重写）
+bool BaseReportParser::getDateRange(QString& startDate, QString& endDate)
+{
+    // 基类默认返回 false（日报不需要日期范围）
+    startDate.clear();
+    endDate.clear();
+    return false;
 }
 
 bool BaseReportParser::shouldMergeBlocks(const TimeBlock& block1, const TimeBlock& block2)

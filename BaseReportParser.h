@@ -49,10 +49,17 @@ public:
     struct TimeBlock {
         QTime startTime;
         QTime endTime;
+        QString startDate;  // 用于月报：如 "2025-07-10"
+        QString endDate;    // 用于月报：如 "2025-07-20"
         QList<int> taskIndices;
 
         bool isValid() const {
             return startTime.isValid() && endTime.isValid();
+        }
+
+        // 判断是否为日期范围查询（月报）
+        bool isDateRange() const {
+            return !startDate.isEmpty() && !endDate.isEmpty();
         }
     };
 
@@ -152,7 +159,7 @@ protected:
      * @brief 识别连续的时间块
      * @return 时间块列表
      */
-    QList<TimeBlock> identifyTimeBlocks();
+    virtual QList<TimeBlock> identifyTimeBlocks();
 
     /**
      * @brief 判断两个时间块是否应该合并
@@ -161,6 +168,14 @@ protected:
      * @return 是否应该合并
      */
     bool shouldMergeBlocks(const TimeBlock& block1, const TimeBlock& block2);
+
+    /**
+    * @brief 获取日期范围（月报需要重写）
+    * @param startDate 输出：起始日期（如 "2025-07-10"）
+    * @param endDate 输出：结束日期（如 "2025-07-20"）
+    * @return 是否为日期范围查询
+    */
+    virtual bool getDateRange(QString& startDate, QString& endDate);
 
     // ===== 标记识别（子类可选择性重写） =====
     virtual bool isTimeMarker(const QString& text) const;

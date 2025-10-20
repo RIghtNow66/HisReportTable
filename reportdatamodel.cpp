@@ -333,6 +333,10 @@ BaseReportParser* ReportDataModel::getParser() const {
     return m_parser;
 }
 
+void ReportDataModel::notifyDataChanged() {
+    emit dataChanged(index(0, 0), index(m_maxRow - 1, m_maxCol - 1));
+}
+
 bool ReportDataModel::hasExecutedQueries() const
 {
     if (m_reportType != DAY_REPORT && m_reportType != MONTH_REPORT) {
@@ -348,10 +352,6 @@ bool ReportDataModel::hasExecutedQueries() const
     }
 
     return false;
-}
-
-void ReportDataModel::notifyDataChanged() {
-    emit dataChanged(index(0, 0), index(m_maxRow - 1, m_maxCol - 1));
 }
 
 

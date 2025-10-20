@@ -37,6 +37,9 @@ protected:
     QDateTime constructDateTime(const QString& date, const QString& time) override;
     int getQueryIntervalSeconds() const override { return 86400; }  // 月报间隔24小时
 
+    QList<TimeBlock> identifyTimeBlocks() override;
+    bool getDateRange(QString& startDate, QString& endDate) override;
+
     // ===== 重写标记识别 =====
     QString extractTime(const QString& text) override;
 
@@ -48,9 +51,19 @@ private:
     QString extractTimeOfDay(const QString& text);
     int extractDay(const QString& text);
 
+    void collectActualDays();
+    int getMinDay() const;
+    int getMaxDay() const;
+
 private:
     QString m_baseYearMonth;   // "2024-01"
     QString m_baseTime;        // "08:30:00"
+
+    QSet<int> m_actualDays; // 实际出现的日期集合：{ 10, 11, 12, ..., 20 }
+
+    // 临时存储当前查询的日期范围（用于 getDateRange）
+    QString m_currentQueryStartDate;
+    QString m_currentQueryEndDate;
 };
 
 #endif // MONTHREPORTPARSER_H
