@@ -712,15 +712,51 @@ void MainWindow::onRefreshData()
             return;
         }
 
+        if (parser->isPrefetching()) {
+            QMessageBox::information(this, "请稍候",
+                "数据正在后台加载中，请等待预查询完成后再刷新。\n\n"
+                "预查询完成后会自动弹窗提示。");
+            return;
+        }
+
+        // 【保留】连接预查询完成信号（统一处理日报和月报）
+        connect(parser, &BaseReportParser::prefetchCompleted,
+            this, [this](bool hasData, int dataCount, int successCount, int totalCount) {
+                if (!hasData) {
+                    // 情况3：完全失败
+                    QMessageBox::critical(this, "预查询失败",
+                        "数据加载失败，未缓存任何数据！\n\n请检查数据库连接或稍后重试。");
+                }
+                else if (totalCount == 0 || successCount == totalCount) {
+                    // 情况1：完全成功（或未知总数时也当完全成功）
+                    QMessageBox::information(this, "预查询完成",
+                        QString("数据加载完成！\n\n已缓存 %1 个数据点\n\n现在可以点击 [刷新数据] 填充报表。")
+                        .arg(dataCount));
+                }
+                else if (successCount > 0) {
+                    // 情况2：部分成功
+                    int failCount = totalCount - successCount;
+                    QMessageBox::warning(this, "预查询部分完成",
+                        QString("数据加载部分完成！\n\n"
+                            "成功：%1/%2 次查询\n"
+                            "失败：%3 次查询\n"
+                            "已缓存：%4 个数据点\n\n"
+                            "部分数据可能显示为 N/A，建议检查数据库连接。")
+                        .arg(successCount).arg(totalCount).arg(failCount).arg(dataCount));
+                }
+                else {
+                    // 理论上不会到这里（successCount=0 但 hasData=true）
+                    QMessageBox::warning(this, "预查询异常",
+                        QString("数据加载状态异常\n\n已缓存 %1 个数据点，但所有查询失败。")
+                        .arg(dataCount));
+                }
+            }, Qt::QueuedConnection);
+
+
         // 1. 创建进度对话框
         QProgressDialog progress("正在准备数据...", "取消", 0, 0, this);
         progress.setWindowModality(Qt::WindowModal);
         progress.setMinimumDuration(500);
-
-        connect(parser, &BaseReportParser::databaseError,
-            this, [this](QString errorMsg) {
-                QMessageBox::warning(this, "数据库错误", errorMsg);
-            }, Qt::QueuedConnection);
 
         bool needsPrefetch = parser->getPendingQueryCount() > 0 &&
             !parser->isPrefetching();
@@ -753,6 +789,7 @@ void MainWindow::onRefreshData()
         bool completed = m_dataModel->refreshReportData(&progress);
 
         // 断开所有连接
+        disconnect(parser, &BaseReportParser::prefetchCompleted, this, nullptr);
         disconnect(parser, nullptr, &progress, nullptr);
         disconnect(parser, &BaseReportParser::databaseError, this, nullptr);
 
@@ -766,7 +803,6 @@ void MainWindow::onRefreshData()
         m_dataModel->refreshReportData(nullptr);
     }
 }
-
 void MainWindow::onRestoreConfig()
 {
     if (m_dataModel->rowCount() == 0 || m_dataModel->columnCount() == 0) {

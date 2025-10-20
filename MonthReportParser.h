@@ -35,13 +35,16 @@ protected:
     void parseRow(int row) override;
     QTime getTaskTime(const QueryTask& task) override;
     QDateTime constructDateTime(const QString& date, const QString& time) override;
-    int getQueryIntervalSeconds() const override { return 86400; }  // 月报间隔24小时
+    int getQueryIntervalSeconds() const override { return 60; }  // 月报间隔24小时
 
     QList<TimeBlock> identifyTimeBlocks() override;
     bool getDateRange(QString& startDate, QString& endDate) override;
 
     // ===== 重写标记识别 =====
     QString extractTime(const QString& text) override;
+
+    // ==== = 重写预查询逻辑 ==== =
+    bool analyzeAndPrefetch() override;
 
 private:
     // ===== 月报特有的标记识别 =====

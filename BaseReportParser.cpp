@@ -20,6 +20,8 @@ BaseReportParser::BaseReportParser(ReportDataModel* model, QObject* parent)
     , m_prefetchWatcher(nullptr)
     , m_isPrefetching(false)
     , m_stopRequested(0)
+    , m_lastPrefetchSuccessCount(0)  
+    , m_lastPrefetchTotalCount(0)  
 {
     // 创建 FutureWatcher
     m_prefetchWatcher = new QFutureWatcher<bool>(this);
@@ -63,13 +65,28 @@ void BaseReportParser::onPrefetchFinished()
 
     bool success = m_prefetchFuture.result();
 
-    if (success) {
-        QMutexLocker locker(&m_cacheMutex);
-        qDebug() << "预查询完成：已缓存" << m_dataCache.size() << "个数据点";
+    QMutexLocker locker(&m_cacheMutex);
+    int dataCount = m_dataCache.size();
+    locker.unlock();
+
+    // 获取统计信息
+    int successCount = m_lastPrefetchSuccessCount;
+    int totalCount = m_lastPrefetchTotalCount;
+
+    if (dataCount > 0) {
+        qDebug() << QString("预查询完成：已缓存 %1 个数据点（成功 %2/%3）")
+            .arg(dataCount).arg(successCount).arg(totalCount);
+        emit prefetchCompleted(true, dataCount, successCount, totalCount);
     }
     else {
-        qWarning() << "预查询失败";
+        qWarning() << QString("预查询失败：无数据（成功 %1/%2）")
+            .arg(successCount).arg(totalCount);
+        emit prefetchCompleted(false, 0, successCount, totalCount);
     }
+
+    // 重置统计信息
+    m_lastPrefetchSuccessCount = 0;
+    m_lastPrefetchTotalCount = 0;
 }
 
 void BaseReportParser::clearCache()
@@ -113,7 +130,8 @@ bool BaseReportParser::findInCache(const QString& rtuId, int64_t timestamp, floa
     }
 
     // 2. 容错匹配：±60秒内的最近时间点
-    const int64_t tolerance = 60000;  // 60秒（毫秒）
+    //const int64_t tolerance = 60000;  // 60秒（毫秒）
+    const int64_t tolerance = 300000;  // 60秒（毫秒）
 
     int64_t closestDiff = std::numeric_limits<int64_t>::max();
     bool found = false;
@@ -170,14 +188,22 @@ bool BaseReportParser::executeSingleQuery(const QString& rtuList,
 
     qDebug() << "  查询地址：" << query;
 
-    auto startQueryTime = QDateTime::currentDateTime();  // 【新增】
+    auto startQueryTime = QDateTime::currentDateTime();  
 
     try {
         auto dataMap = m_fetcher->fetchDataFromAddress(query.toStdString());
 
-        auto endQueryTime = QDateTime::currentDateTime();  // 【新增】
-        qDebug() << "  数据库查询耗时：" << startQueryTime.msecsTo(endQueryTime) << "ms";  // 【新增】
+        auto endQueryTime = QDateTime::currentDateTime();  
+        qDebug() << "  数据库查询耗时：" << startQueryTime.msecsTo(endQueryTime) << "ms";  
         qDebug() << "  返回时间点数量：" << dataMap.size();
+
+        qDebug() << "  === 返回的所有时间戳 ===";
+        for (auto it = dataMap.begin(); it != dataMap.end(); ++it) {
+            int64_t ts = it->first;
+            QDateTime dt = QDateTime::fromMSecsSinceEpoch(ts);
+            qDebug() << QString("    时间戳: %1 -> %2").arg(ts).arg(dt.toString("yyyy-MM-dd HH:mm:ss"));
+        }
+        qDebug() << "  =========================";
 
         if (dataMap.empty()) {
             qWarning() << "  查询无数据";
@@ -322,26 +348,6 @@ bool BaseReportParser::analyzeAndPrefetch()
         return false;
     }
 
-    qDebug() << "识别到" << blocks.size() << "个时间块：";
-    for (int i = 0; i < blocks.size(); ++i) {
-        if (blocks[i].isDateRange()) {
-            qDebug() << QString("  块%1: %2 %3 ~ %4 %5 (%6个数据点)")
-                .arg(i + 1)
-                .arg(blocks[i].startDate)
-                .arg(blocks[i].startTime.toString("HH:mm"))
-                .arg(blocks[i].endDate)
-                .arg(blocks[i].endTime.toString("HH:mm"))
-                .arg(blocks[i].taskIndices.size());
-        }
-        else {
-            qDebug() << QString("  块%1: %2 ~ %3 (%4个数据点)")
-                .arg(i + 1)
-                .arg(blocks[i].startTime.toString("HH:mm"))
-                .arg(blocks[i].endTime.toString("HH:mm"))
-                .arg(blocks[i].taskIndices.size());
-        }
-    }
-
     // 2. 收集所有唯一的RTU
     QSet<QString> uniqueRTUs;
     for (const QueryTask& task : m_queryTasks) {
@@ -362,11 +368,6 @@ bool BaseReportParser::analyzeAndPrefetch()
 
         for (int i = 1; i < blocks.size(); ++i) {
             if (shouldMergeBlocks(currentMerged, blocks[i])) {
-                qDebug() << QString("  合并块 %1~%2 和 %3~%4")
-                    .arg(currentMerged.startTime.toString("HH:mm"))
-                    .arg(currentMerged.endTime.toString("HH:mm"))
-                    .arg(blocks[i].startTime.toString("HH:mm"))
-                    .arg(blocks[i].endTime.toString("HH:mm"));
 
                 currentMerged.endTime = blocks[i].endTime;
                 currentMerged.taskIndices.append(blocks[i].taskIndices);
@@ -382,12 +383,16 @@ bool BaseReportParser::analyzeAndPrefetch()
     qDebug() << "查询策略：" << mergedBlocks.size() << "次查询";
 
     // 4. 执行查询
-    bool allSuccess = true;
+    int successCount = 0;  // 改用成功计数
+    int failCount = 0;     // 失败计数
     int intervalSeconds = getQueryIntervalSeconds();
 
     for (int i = 0; i < mergedBlocks.size(); ++i) {
         if (m_stopRequested.loadAcquire()) {
             qDebug() << "后台查询被中断";
+            // 记录统计信息
+            m_lastPrefetchSuccessCount = successCount;
+            m_lastPrefetchTotalCount = mergedBlocks.size();
             return false;
         }
         const TimeBlock& block = mergedBlocks[i];
@@ -417,13 +422,22 @@ bool BaseReportParser::analyzeAndPrefetch()
             block.endTime,
             intervalSeconds);
 
-        if (!success) {
+        if (success) {
+            successCount++; 
+        }
+        else {
             qWarning() << "查询失败";
-            allSuccess = false;
+            failCount++;   
         }
     }
 
-    return allSuccess;
+    // 记录统计信息
+    qDebug() << QString("预查询完成: 成功 %1/%2").arg(successCount).arg(mergedBlocks.size());
+    m_lastPrefetchSuccessCount = successCount;
+    m_lastPrefetchTotalCount = mergedBlocks.size();
+
+    // 只要有一次成功就返回 true
+    return successCount > 0;
 }
 
 // ===== 默认实现（子类可重写） =====

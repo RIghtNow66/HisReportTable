@@ -36,9 +36,6 @@ bool MonthReportParser::scanAndParse()
         return false;
     }
 
-    qDebug() << "基准年月:" << m_baseYearMonth;
-    qDebug() << "基准时间:" << m_baseTime;
-
     // 逐行解析
     int totalRows = m_model->rowCount();
     for (int row = 0; row < totalRows; ++row) {
@@ -53,7 +50,6 @@ bool MonthReportParser::scanAndParse()
         return false;
     }
 
-    qDebug() << "解析完成：找到" << m_queryTasks.size() << "个数据点";
 
     collectActualDays();
 
@@ -125,9 +121,6 @@ bool MonthReportParser::findDateMarker()
                         .arg(date.month());
                 }
 
-                qDebug() << QString("找到 #Date1 标记: 行%1 列%2 → %3")
-                    .arg(row).arg(col).arg(m_baseYearMonth);
-
                 foundDate1 = true;
             }
             // 查找 #Date2:08:30
@@ -142,9 +135,6 @@ bool MonthReportParser::findDateMarker()
                 cell->cellType = CellData::TimeMarker;
                 cell->originalMarker = text;
                 cell->value = m_baseTime.left(5);  // "08:30:00" → "08:30"
-
-                qDebug() << QString("找到 #Date2 标记: 行%1 列%2 → %3")
-                    .arg(row).arg(col).arg(m_baseTime);
 
                 foundDate2 = true;
             }
@@ -203,8 +193,6 @@ void MonthReportParser::parseRow(int row)
             cell->originalMarker = text;
             cell->value = QString::number(day);  // 显示日期数字
 
-            qDebug() << QString("行%1 列%2: 日期标记 #t#%3 → %4日")
-                .arg(row).arg(col).arg(day).arg(day);
         }
         // 遇到 #d# 数据标记
         else if (isDataMarker(text)) {
@@ -231,8 +219,6 @@ void MonthReportParser::parseRow(int row)
 
             m_queryTasks.append(task);
 
-            qDebug() << QString("  行%1 列%2: RTU=%3, 日期=%4日 %5")
-                .arg(row).arg(col).arg(rtuId).arg(m_currentTime).arg(m_baseTime);
         }
     }
 }
@@ -336,38 +322,18 @@ bool MonthReportParser::executeQueries(QProgressDialog* progress)
         QDateTime dateTime = constructDateTime(fullDate, m_baseTime);
         int64_t timestamp = dateTime.toMSecsSinceEpoch();
 
-        // 【新增】调试日志（只输出前3个）
-        if (i < 3) {
-            qDebug() << QString("任务%1: RTU=%2, 日期=%3, 时间=%4")
-                .arg(i + 1)
-                .arg(task.cell->rtuId)
-                .arg(fullDate)
-                .arg(m_baseTime);
-            qDebug() << QString("  构造的时间戳: %1").arg(timestamp);
-            qDebug() << QString("  dateTime: %1").arg(dateTime.toString("yyyy-MM-dd HH:mm:ss"));
-        }
-
         float value = 0.0f;
         if (cacheReady && findInCache(task.cell->rtuId, timestamp, value)) {
             task.cell->value = QString::number(value, 'f', 2);
             task.cell->queryExecuted = true;
             task.cell->querySuccess = true;
             successCount++;
-
-            // 【新增】成功时也输出
-            if (i < 3) {
-                qDebug() << QString(" 找到缓存值: %1").arg(value);
-            }
         }
         else {
             task.cell->value = "N/A";
             task.cell->queryExecuted = true;
             task.cell->querySuccess = false;
             failCount++;
-
-            if (i < 3) {
-                qDebug() << QString("未找到缓存值");
-            }
         }
 
         if (progress) {
@@ -543,7 +509,6 @@ int MonthReportParser::getMaxDay() const
     return *std::max_element(m_actualDays.begin(), m_actualDays.end());
 }
 
-// 识别时间块（月报版本）
 QList<BaseReportParser::TimeBlock> MonthReportParser::identifyTimeBlocks()
 {
     QList<TimeBlock> blocks;
@@ -553,53 +518,126 @@ QList<BaseReportParser::TimeBlock> MonthReportParser::identifyTimeBlocks()
         return blocks;
     }
 
-    int minDay = getMinDay();
-    int maxDay = getMaxDay();
-
-    QString startDate = QString("%1-%2").arg(m_baseYearMonth).arg(minDay, 2, 10, QChar('0'));
-    QString endDate = QString("%1-%2").arg(m_baseYearMonth).arg(maxDay, 2, 10, QChar('0'));
-
-    qDebug() << QString("月报查询范围：%1 ~ %2").arg(startDate).arg(endDate);
-
     QTime baseTime = QTime::fromString(m_baseTime, "HH:mm:ss");
-    QTime endTime = baseTime.addSecs(60);
 
-    TimeBlock block;
-    block.startTime = baseTime;
-    block.endTime = endTime;
-    block.startDate = startDate;
-    block.endDate = endDate;
+    // 为每一天创建一个单独的查询块
+    QList<int> sortedDays = m_actualDays.values();
+    std::sort(sortedDays.begin(), sortedDays.end());
 
-    m_currentQueryStartDate = startDate;
-    m_currentQueryEndDate = endDate;
+    qDebug() << QString("月报查询模式：每天单独查询（共%1天）").arg(sortedDays.size());
 
-    blocks.append(block);
+    for (int day : sortedDays) {
+        QString dateStr = QString("%1-%2").arg(m_baseYearMonth).arg(day, 2, 10, QChar('0'));
 
-    qDebug() << QString("生成查询块：%1 %2 ~ %3 %4")
-        .arg(startDate)
-        .arg(baseTime.toString("HH:mm:ss"))
-        .arg(endDate)
-        .arg(endTime.toString("HH:mm:ss"));
+        // 验证日期有效性
+        QDate date = QDate::fromString(dateStr, "yyyy-MM-dd");
+        if (!date.isValid()) {
+            qWarning() << QString("跳过无效日期：%1").arg(dateStr);
+            continue;
+        }
+
+        TimeBlock block;
+        block.startTime = baseTime;                // 08:30:00
+        block.endTime = baseTime.addSecs(60);      // 08:31:00（加1分钟）
+        block.startDate = dateStr;
+        block.endDate = dateStr;
+
+        blocks.append(block);
+
+        //qDebug() << QString("  生成查询块 %1: %2 %3")
+        //    .arg(blocks.size())
+        //    .arg(dateStr)
+        //    .arg(baseTime.toString("HH:mm:ss"));
+    }
 
     return blocks;
 }
 
-
 // 实现日期范围获取
 bool MonthReportParser::getDateRange(QString& startDate, QString& endDate)
 {
-    qDebug() << "【月报】getDateRange() 被调用";  // 【新增】
-    qDebug() << "  startDate:" << m_currentQueryStartDate;  // 【新增】
-    qDebug() << "  endDate:" << m_currentQueryEndDate;      // 【新增】
-
     if (m_currentQueryStartDate.isEmpty() || m_currentQueryEndDate.isEmpty()) {
-        qWarning() << "【月报】日期范围为空！";  // 【新增】
         return false;
     }
 
     startDate = m_currentQueryStartDate;
     endDate = m_currentQueryEndDate;
     return true;
+}
+
+bool MonthReportParser::analyzeAndPrefetch()
+{
+    // 1. 识别时间块
+    QList<TimeBlock> blocks = identifyTimeBlocks();
+
+    if (m_stopRequested.loadAcquire()) {
+        m_lastPrefetchSuccessCount = 0;
+        m_lastPrefetchTotalCount = 0;
+        return false;
+    }
+
+    if (blocks.isEmpty()) {
+        qWarning() << "未识别到有效时间块";
+        m_lastPrefetchSuccessCount = 0;
+        m_lastPrefetchTotalCount = 0;
+        return false;
+    }
+
+    // 2. 收集所有唯一的RTU
+    QSet<QString> uniqueRTUs;
+    for (const QueryTask& task : m_queryTasks) {
+        uniqueRTUs.insert(task.cell->rtuId);
+    }
+    QString rtuList = uniqueRTUs.values().join(",");
+
+    // 4. 执行查询
+    int successCount = 0;
+    int failCount = 0;
+    int intervalSeconds = getQueryIntervalSeconds();
+
+    for (int i = 0; i < blocks.size(); ++i) {
+        if (m_stopRequested.loadAcquire()) {
+            qDebug() << "后台查询被中断";
+            m_lastPrefetchSuccessCount = successCount;
+            m_lastPrefetchTotalCount = blocks.size();
+            return false;
+        }
+
+        const TimeBlock& block = blocks[i];
+
+        qDebug() << QString("执行查询 %1/%2: %3 %4")
+            .arg(i + 1)
+            .arg(blocks.size())
+            .arg(block.startDate)
+            .arg(block.startTime.toString("HH:mm"));
+
+        emit prefetchProgress(i + 1, blocks.size());
+
+        // 在每次查询前，更新当前查询的日期范围
+        m_currentQueryStartDate = block.startDate;
+        m_currentQueryEndDate = block.endDate;
+
+        bool success = executeSingleQuery(rtuList,
+            block.startTime,
+            block.endTime,
+            intervalSeconds);
+
+        if (success) {
+            successCount++;
+        }
+        else {
+            qWarning() << QString("查询失败: %1").arg(block.startDate);
+            failCount++;
+        }
+    }
+
+    // 记录统计信息
+    qDebug() << QString("月报预查询完成: 成功 %1/%2").arg(successCount).arg(blocks.size());
+    m_lastPrefetchSuccessCount = successCount;
+    m_lastPrefetchTotalCount = blocks.size();
+
+    // 只要有一次成功，就认为预查询有效
+    return successCount > 0;
 }
 
 void MonthReportParser::runCorrectnessTest()

@@ -89,6 +89,8 @@ signals:
     void prefetchProgress(int current, int total);
     void databaseError(QString errorMessage);
 
+    void prefetchCompleted(bool hasData, int dataCount, int successCount, int totalCount);
+
 protected:
     // ===== 子类需要实现的纯虚函数 =====
 
@@ -153,7 +155,7 @@ protected:
      * @brief 智能分析并预查询
      * @return 是否成功
      */
-    bool analyzeAndPrefetch();
+    virtual bool analyzeAndPrefetch();
 
     /**
      * @brief 识别连续的时间块
@@ -209,6 +211,9 @@ protected:
     QFutureWatcher<bool>* m_prefetchWatcher;
     bool m_isPrefetching;
     QAtomicInt m_stopRequested;
+
+    int m_lastPrefetchSuccessCount;
+    int m_lastPrefetchTotalCount;
 };
 
 // Hash 函数（用于 QHash）
