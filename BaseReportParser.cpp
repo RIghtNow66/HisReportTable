@@ -93,6 +93,25 @@ bool BaseReportParser::findInCache(const QString& rtuId, int64_t timestamp, floa
         return true;
     }
 
+    // 【新增】调试：打印缓存中该RTU的所有时间戳（限制输出）
+    static int debugCount = 0;
+    if (debugCount < 3) {  // 只输出前3次
+        qDebug() << QString("  缓存查找失败（精确匹配）: RTU=%1, 查询时间戳=%2")
+            .arg(rtuId).arg(timestamp);
+
+        int foundCount = 0;
+        qDebug() << QString("  该RTU在缓存中的时间戳：");
+        for (auto it = m_dataCache.constBegin(); it != m_dataCache.constEnd(); ++it) {
+            if (it.key().rtuId == rtuId && foundCount < 3) {
+                qDebug() << QString("    - %1 (差值: %2秒)")
+                    .arg(it.key().timestamp)
+                    .arg((timestamp - it.key().timestamp) / 1000);
+                foundCount++;
+            }
+        }
+        debugCount++;
+    }
+
     // 2. 容错匹配：±60秒内的最近时间点
     const int64_t tolerance = 60000;  // 60秒（毫秒）
 
@@ -126,24 +145,21 @@ bool BaseReportParser::executeSingleQuery(const QString& rtuList,
     const QTime& endTime,
     int intervalSeconds)
 {
-    // 【修改】支持日期范围查询（月报）
     QString query;
-
-    // 检查是否为月报查询（子类会传入完整的 TimeBlock）
-    // 这里需要通过虚函数获取日期信息
     QString startDateStr, endDateStr;
+
     if (getDateRange(startDateStr, endDateStr)) {
-        // 月报模式：构建带日期的查询
+        // 月报模式
         query = QString("%1@%2 %3~%4 %5#%6")
             .arg(rtuList)
-            .arg(startDateStr)                          // 2025-07-10
-            .arg(startTime.toString("HH:mm:ss"))        // 08:30:00
-            .arg(endDateStr)                            // 2025-07-20
-            .arg(endTime.toString("HH:mm:ss"))          // 08:31:00
+            .arg(startDateStr)
+            .arg(startTime.toString("HH:mm:ss"))
+            .arg(endDateStr)
+            .arg(endTime.toString("HH:mm:ss"))
             .arg(intervalSeconds);
     }
     else {
-        // 日报模式：原有逻辑
+        // 日报模式
         query = QString("%1@%2 %3~%2 %4#%5")
             .arg(rtuList)
             .arg(m_baseDate)
@@ -154,10 +170,13 @@ bool BaseReportParser::executeSingleQuery(const QString& rtuList,
 
     qDebug() << "  查询地址：" << query;
 
+    auto startQueryTime = QDateTime::currentDateTime();  // 【新增】
+
     try {
-        // 执行查询
         auto dataMap = m_fetcher->fetchDataFromAddress(query.toStdString());
 
+        auto endQueryTime = QDateTime::currentDateTime();  // 【新增】
+        qDebug() << "  数据库查询耗时：" << startQueryTime.msecsTo(endQueryTime) << "ms";  // 【新增】
         qDebug() << "  返回时间点数量：" << dataMap.size();
 
         if (dataMap.empty()) {
@@ -166,30 +185,33 @@ bool BaseReportParser::executeSingleQuery(const QString& rtuList,
             return false;
         }
 
+        // 【优化】在锁外准备数据
+        QHash<CacheKey, float> tempCache;
+        QStringList rtuArray = rtuList.split(",");
+
+        for (auto it = dataMap.begin(); it != dataMap.end(); ++it) {
+            int64_t timestamp = it->first;
+            const std::vector<float>& values = it->second;
+
+            for (int i = 0; i < rtuArray.size() && i < values.size(); ++i) {
+                CacheKey key;
+                key.rtuId = rtuArray[i];
+                key.timestamp = timestamp;
+                tempCache[key] = values[i];
+            }
+        }
+
+        // 【优化】快速持锁写入
         {
             QMutexLocker locker(&m_cacheMutex);
-            // 解析RTU列表
-            QStringList rtuArray = rtuList.split(",");
-
-            // 存入缓存
-            for (auto it = dataMap.begin(); it != dataMap.end(); ++it) {
-                int64_t timestamp = it->first;
-                const std::vector<float>& values = it->second;
-
-                for (int i = 0; i < rtuArray.size() && i < values.size(); ++i) {
-                    CacheKey key;
-                    key.rtuId = rtuArray[i];
-                    key.timestamp = timestamp;
-
-                    m_dataCache[key] = values[i];
-                }
-            }
-
-            qDebug() << QString("已缓存 %1 个时间点 × %2 个RTU = %3 个值")
-                .arg(dataMap.size())
-                .arg(rtuArray.size())
-                .arg(m_dataCache.size());
+            m_dataCache.unite(tempCache);
         }
+
+        qDebug() << QString("已缓存 %1 个时间点 × %2 个RTU = %3 个值")
+            .arg(dataMap.size())
+            .arg(rtuArray.size())
+            .arg(m_dataCache.size());
+
         return true;
     }
     catch (const std::exception& e) {
@@ -232,6 +254,7 @@ bool BaseReportParser::shouldMergeBlocks(const TimeBlock& block1, const TimeBloc
 
 QList<BaseReportParser::TimeBlock> BaseReportParser::identifyTimeBlocks()
 {
+    qDebug() << "【月报】identifyTimeBlocks() 被调用";
     QList<TimeBlock> blocks;
 
     if (m_queryTasks.isEmpty()) {
@@ -301,11 +324,22 @@ bool BaseReportParser::analyzeAndPrefetch()
 
     qDebug() << "识别到" << blocks.size() << "个时间块：";
     for (int i = 0; i < blocks.size(); ++i) {
-        qDebug() << QString("  块%1: %2 ~ %3 (%4个数据点)")
-            .arg(i + 1)
-            .arg(blocks[i].startTime.toString("HH:mm"))
-            .arg(blocks[i].endTime.toString("HH:mm"))
-            .arg(blocks[i].taskIndices.size());
+        if (blocks[i].isDateRange()) {
+            qDebug() << QString("  块%1: %2 %3 ~ %4 %5 (%6个数据点)")
+                .arg(i + 1)
+                .arg(blocks[i].startDate)
+                .arg(blocks[i].startTime.toString("HH:mm"))
+                .arg(blocks[i].endDate)
+                .arg(blocks[i].endTime.toString("HH:mm"))
+                .arg(blocks[i].taskIndices.size());
+        }
+        else {
+            qDebug() << QString("  块%1: %2 ~ %3 (%4个数据点)")
+                .arg(i + 1)
+                .arg(blocks[i].startTime.toString("HH:mm"))
+                .arg(blocks[i].endTime.toString("HH:mm"))
+                .arg(blocks[i].taskIndices.size());
+        }
     }
 
     // 2. 收集所有唯一的RTU
@@ -358,11 +392,23 @@ bool BaseReportParser::analyzeAndPrefetch()
         }
         const TimeBlock& block = mergedBlocks[i];
 
-        qDebug() << QString("执行查询 %1/%2: %3 ~ %4")
-            .arg(i + 1)
-            .arg(mergedBlocks.size())
-            .arg(block.startTime.toString("HH:mm"))
-            .arg(block.endTime.toString("HH:mm"));
+        if (block.isDateRange()) {
+            qDebug() << QString("执行查询 %1/%2: %3 %4 ~ %5 %6")
+                .arg(i + 1)
+                .arg(mergedBlocks.size())
+                .arg(block.startDate)
+                .arg(block.startTime.toString("HH:mm"))
+                .arg(block.endDate)
+                .arg(block.endTime.toString("HH:mm"));
+        }
+        else {
+            qDebug() << QString("执行查询 %1/%2: %3 ~ %4")
+                .arg(i + 1)
+                .arg(mergedBlocks.size())
+                .arg(block.startTime.toString("HH:mm"))
+                .arg(block.endTime.toString("HH:mm"));
+        }
+
 
         emit prefetchProgress(i + 1, mergedBlocks.size());
 

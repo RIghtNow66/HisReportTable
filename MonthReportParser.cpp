@@ -57,6 +57,12 @@ bool MonthReportParser::scanAndParse()
 
     collectActualDays();
 
+    if (m_actualDays.isEmpty()) {
+        qWarning() << "未找到有效日期，跳过预查询";
+        emit parseCompleted(true, "解析完成，但未找到有效日期");
+        return true;
+    }
+
     // 启动后台预查询
     qDebug() << "========== 开始后台预查询 ==========";
     m_isPrefetching = true;
@@ -64,7 +70,7 @@ bool MonthReportParser::scanAndParse()
     m_prefetchFuture = QtConcurrent::run([this]() -> bool {
         qDebug() << "[后台线程] 月报预查询开始...";
         try {
-            bool result = this->analyzeAndPrefetch();
+            bool result = this->analyzeAndPrefetch();  // 这里会调用 identifyTimeBlocks()
             qDebug() << "[后台线程] 月报预查询" << (result ? "成功" : "失败");
             return result;
         }
@@ -330,18 +336,38 @@ bool MonthReportParser::executeQueries(QProgressDialog* progress)
         QDateTime dateTime = constructDateTime(fullDate, m_baseTime);
         int64_t timestamp = dateTime.toMSecsSinceEpoch();
 
+        // 【新增】调试日志（只输出前3个）
+        if (i < 3) {
+            qDebug() << QString("任务%1: RTU=%2, 日期=%3, 时间=%4")
+                .arg(i + 1)
+                .arg(task.cell->rtuId)
+                .arg(fullDate)
+                .arg(m_baseTime);
+            qDebug() << QString("  构造的时间戳: %1").arg(timestamp);
+            qDebug() << QString("  dateTime: %1").arg(dateTime.toString("yyyy-MM-dd HH:mm:ss"));
+        }
+
         float value = 0.0f;
         if (cacheReady && findInCache(task.cell->rtuId, timestamp, value)) {
             task.cell->value = QString::number(value, 'f', 2);
             task.cell->queryExecuted = true;
             task.cell->querySuccess = true;
             successCount++;
+
+            // 【新增】成功时也输出
+            if (i < 3) {
+                qDebug() << QString(" 找到缓存值: %1").arg(value);
+            }
         }
         else {
             task.cell->value = "N/A";
             task.cell->queryExecuted = true;
             task.cell->querySuccess = false;
             failCount++;
+
+            if (i < 3) {
+                qDebug() << QString("未找到缓存值");
+            }
         }
 
         if (progress) {
@@ -562,7 +588,12 @@ QList<BaseReportParser::TimeBlock> MonthReportParser::identifyTimeBlocks()
 // 实现日期范围获取
 bool MonthReportParser::getDateRange(QString& startDate, QString& endDate)
 {
+    qDebug() << "【月报】getDateRange() 被调用";  // 【新增】
+    qDebug() << "  startDate:" << m_currentQueryStartDate;  // 【新增】
+    qDebug() << "  endDate:" << m_currentQueryEndDate;      // 【新增】
+
     if (m_currentQueryStartDate.isEmpty() || m_currentQueryEndDate.isEmpty()) {
+        qWarning() << "【月报】日期范围为空！";  // 【新增】
         return false;
     }
 
