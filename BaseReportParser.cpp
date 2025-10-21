@@ -87,6 +87,7 @@ void BaseReportParser::onPrefetchFinished()
     // 重置统计信息
     m_lastPrefetchSuccessCount = 0;
     m_lastPrefetchTotalCount = 0;
+
 }
 
 void BaseReportParser::clearCache()
@@ -110,7 +111,7 @@ bool BaseReportParser::findInCache(const QString& rtuId, int64_t timestamp, floa
         return true;
     }
 
-    // 【新增】调试：打印缓存中该RTU的所有时间戳（限制输出）
+    // 调试：打印缓存中该RTU的所有时间戳（限制输出）
     static int debugCount = 0;
     if (debugCount < 3) {  // 只输出前3次
         qDebug() << QString("  缓存查找失败（精确匹配）: RTU=%1, 查询时间戳=%2")
@@ -130,7 +131,6 @@ bool BaseReportParser::findInCache(const QString& rtuId, int64_t timestamp, floa
     }
 
     // 2. 容错匹配：±60秒内的最近时间点
-    //const int64_t tolerance = 60000;  // 60秒（毫秒）
     const int64_t tolerance = 300000;  // 60秒（毫秒）
 
     int64_t closestDiff = std::numeric_limits<int64_t>::max();
@@ -232,11 +232,6 @@ bool BaseReportParser::executeSingleQuery(const QString& rtuList,
             QMutexLocker locker(&m_cacheMutex);
             m_dataCache.unite(tempCache);
         }
-
-        qDebug() << QString("已缓存 %1 个时间点 × %2 个RTU = %3 个值")
-            .arg(dataMap.size())
-            .arg(rtuArray.size())
-            .arg(m_dataCache.size());
 
         return true;
     }

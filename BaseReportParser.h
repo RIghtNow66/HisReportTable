@@ -74,6 +74,7 @@ public:
 
     // ===== 通用接口 =====
     void clearCache();                                   // 清空缓存
+
     bool isValid() const { return m_dateFound; }
     int getPendingQueryCount() const { return m_queryTasks.size(); }
     bool isPrefetching() const { return m_isPrefetching; }

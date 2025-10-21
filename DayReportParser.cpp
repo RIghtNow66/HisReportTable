@@ -290,14 +290,24 @@ bool DayReportParser::executeQueries(QProgressDialog* progress)
 void DayReportParser::restoreToTemplate()
 {
     qDebug() << "恢复到模板初始状态...";
-    m_dataCache.clear();
+
+    int restoredCount = 0;
+    int nullCount = 0;
+
     for (const auto& task : m_queryTasks) {
-        if (task.cell) {
-            task.cell->value = task.cell->originalMarker;
-            task.cell->queryExecuted = false;
-            task.cell->querySuccess = false;
+        if (!task.cell) {  
+            nullCount++;
+            qWarning() << QString("跳过无效单元格：行%1 列%2").arg(task.row).arg(task.col);
+            continue;
         }
+
+        task.cell->value = task.cell->originalMarker;
+        task.cell->queryExecuted = false;
+        task.cell->querySuccess = false;
+        restoredCount++;
     }
+
+    qDebug() << QString("还原完成：成功%1个，跳过%2个无效单元格").arg(restoredCount).arg(nullCount);
 }
 
 bool DayReportParser::isDateMarker(const QString& text) const

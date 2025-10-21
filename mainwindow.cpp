@@ -288,7 +288,7 @@ void MainWindow::onImportExcel()
     m_tableView->clearSpans();
     m_tableView->resetColumnWidthsBase();
 
-    // =====【已修正】使用统一的加载接口 =====
+    // =====【修改】在加载前就建立信号连接 =====
     if (m_dataModel->loadReportTemplate(fileName)) {
         applyRowColumnSizes();
         m_tableView->updateSpans();
@@ -296,14 +296,52 @@ void MainWindow::onImportExcel()
         QFileInfo fileInfo(fileName);
         setWindowTitle(QString("SCADA报表控件 - [%1]").arg(fileInfo.fileName()));
 
-        // 根据加载后的类型决定提示信息
-        if (m_dataModel->getReportType() == ReportDataModel::DAY_REPORT) {
-            QMessageBox::information(this, "日报已加载",
-                "日报模板已加载，请点击 [刷新数据] 按钮填充数据。");
-        }
+        ReportDataModel::ReportType reportType = m_dataModel->getReportType();
+
+
+        // ===== 【关键修改】对于日报和月报，立即建立信号连接 =====
+        if (reportType == ReportDataModel::DAY_REPORT ||
+            reportType == ReportDataModel::MONTH_REPORT) {
+
+            BaseReportParser* parser = m_dataModel->getParser();
+            if (parser) 
+
+                // 先断开旧连接
+                disconnect(parser, &BaseReportParser::prefetchCompleted, this, nullptr);
+
+                // 建立新连接
+                connect(parser, &BaseReportParser::prefetchCompleted,
+                    this, [this](bool hasData, int dataCount, int successCount, int totalCount) {
+
+                        if (!hasData) {
+                            QMessageBox::critical(this, "预查询失败",
+                                "数据加载失败，未缓存任何数据！\n\n请检查数据库连接或稍后重试。");
+                        }
+                        else if (totalCount == 0 || successCount == totalCount) {
+                            QMessageBox::information(this, "预查询完成",
+                                QString("数据加载完成！\n\n已缓存 %1 个数据点\n\n现在可以点击 [刷新数据] 填充报表。")
+                                .arg(dataCount));
+                        }
+                        else if (successCount > 0) {
+                            int failCount = totalCount - successCount;
+                            QMessageBox::warning(this, "预查询部分完成",
+                                QString("数据加载部分完成！\n\n"
+                                    "成功：%1/%2 次查询\n"
+                                    "失败：%3 次查询\n"
+                                    "已缓存：%4 个数据点\n\n"
+                                    "部分数据可能显示为 N/A，建议检查数据库连接。")
+                                .arg(successCount).arg(totalCount).arg(failCount).arg(dataCount));
+                        }
+                    }, Qt::QueuedConnection);
+
+            }
+
+            // ===== 月报和日报都不立即弹窗，等预查询完成 =====        }
         else {
+            // 普通Excel立即弹窗
             QMessageBox::information(this, "成功", "文件导入成功！");
         }
+
     }
     else {
         QMessageBox::warning(this, "错误", "文件加载或解析失败！\n\n请检查文件格式或模板标记是否正确。");
@@ -646,17 +684,35 @@ void MainWindow::updateFormulaBar(const QModelIndex& index)
 
 void MainWindow::onInsertRow()
 {
-    if (m_currentIndex.isValid()) {
-        int row = m_currentIndex.row();
-        m_dataModel->insertRows(row, 1);
+    if (!m_currentIndex.isValid()) {
+        QMessageBox::information(this, "提示", "请先选中一个单元格");
+        return;
+    }
+
+    int row = m_currentIndex.row();
+    int insertRow = 0;
+    int count = 0;
+
+    if (showInsertRowDialog(row, insertRow, count)) {
+        qDebug() << QString("插入 %1 行在第 %2 行位置").arg(count).arg(insertRow + 1);
+        m_dataModel->insertRows(insertRow, count);
     }
 }
 
 void MainWindow::onInsertColumn()
 {
-    if (m_currentIndex.isValid()) {
-        int col = m_currentIndex.column();
-        m_dataModel->insertColumns(col + 1, 1);
+    if (!m_currentIndex.isValid()) {
+        QMessageBox::information(this, "提示", "请先选中一个单元格");
+        return;
+    }
+
+    int col = m_currentIndex.column();
+    int insertCol = 0;
+    int count = 0;
+
+    if (showInsertColumnDialog(col, insertCol, count)) {
+        qDebug() << QString("插入 %1 列在第 %2 列位置").arg(count).arg(insertCol + 1);
+        m_dataModel->insertColumns(insertCol, count);
     }
 }
 
@@ -704,7 +760,6 @@ void MainWindow::onRefreshData()
 
     ReportDataModel::ReportType type = m_dataModel->getReportType();
 
-    // 日报和月报模式需要特殊处理，因为它们有耗时的查询操作
     if (type == ReportDataModel::DAY_REPORT || type == ReportDataModel::MONTH_REPORT) {
         BaseReportParser* parser = m_dataModel->getParser();
         if (!parser || !parser->isValid()) {
@@ -719,40 +774,6 @@ void MainWindow::onRefreshData()
             return;
         }
 
-        // 【保留】连接预查询完成信号（统一处理日报和月报）
-        connect(parser, &BaseReportParser::prefetchCompleted,
-            this, [this](bool hasData, int dataCount, int successCount, int totalCount) {
-                if (!hasData) {
-                    // 情况3：完全失败
-                    QMessageBox::critical(this, "预查询失败",
-                        "数据加载失败，未缓存任何数据！\n\n请检查数据库连接或稍后重试。");
-                }
-                else if (totalCount == 0 || successCount == totalCount) {
-                    // 情况1：完全成功（或未知总数时也当完全成功）
-                    QMessageBox::information(this, "预查询完成",
-                        QString("数据加载完成！\n\n已缓存 %1 个数据点\n\n现在可以点击 [刷新数据] 填充报表。")
-                        .arg(dataCount));
-                }
-                else if (successCount > 0) {
-                    // 情况2：部分成功
-                    int failCount = totalCount - successCount;
-                    QMessageBox::warning(this, "预查询部分完成",
-                        QString("数据加载部分完成！\n\n"
-                            "成功：%1/%2 次查询\n"
-                            "失败：%3 次查询\n"
-                            "已缓存：%4 个数据点\n\n"
-                            "部分数据可能显示为 N/A，建议检查数据库连接。")
-                        .arg(successCount).arg(totalCount).arg(failCount).arg(dataCount));
-                }
-                else {
-                    // 理论上不会到这里（successCount=0 但 hasData=true）
-                    QMessageBox::warning(this, "预查询异常",
-                        QString("数据加载状态异常\n\n已缓存 %1 个数据点，但所有查询失败。")
-                        .arg(dataCount));
-                }
-            }, Qt::QueuedConnection);
-
-
         // 1. 创建进度对话框
         QProgressDialog progress("正在准备数据...", "取消", 0, 0, this);
         progress.setWindowModality(Qt::WindowModal);
@@ -762,9 +783,8 @@ void MainWindow::onRefreshData()
             !parser->isPrefetching();
 
         if (needsPrefetch) {
-            // 连接预查询进度
             progress.setLabelText("正在预查询数据...");
-            progress.setRange(0, 0);  // 不确定范围（滚动条模式）
+            progress.setRange(0, 0);
 
             connect(parser, &BaseReportParser::prefetchProgress,
                 &progress, [&progress](int current, int total) {
@@ -775,7 +795,6 @@ void MainWindow::onRefreshData()
                 });
         }
         else {
-            // 如果已有缓存，直接设置填充数据的进度
             progress.setLabelText("正在填充数据...");
             int queryCount = parser->getPendingQueryCount();
             if (queryCount > 0) {
@@ -785,13 +804,9 @@ void MainWindow::onRefreshData()
             }
         }
 
-        // 3. 调用模型的刷新函数，将进度条传入
         bool completed = m_dataModel->refreshReportData(&progress);
 
-        // 断开所有连接
-        disconnect(parser, &BaseReportParser::prefetchCompleted, this, nullptr);
         disconnect(parser, nullptr, &progress, nullptr);
-        disconnect(parser, &BaseReportParser::databaseError, this, nullptr);
 
         if (!completed && progress.wasCanceled()) {
             QMessageBox::warning(this, "已取消", "数据刷新操作已被用户取消。");
@@ -799,10 +814,10 @@ void MainWindow::onRefreshData()
         }
     }
     else {
-        // 对于普通Excel等其他模式，通常操作很快，不需要进度条
         m_dataModel->refreshReportData(nullptr);
     }
 }
+
 void MainWindow::onRestoreConfig()
 {
     if (m_dataModel->rowCount() == 0 || m_dataModel->columnCount() == 0) {
@@ -825,6 +840,285 @@ void MainWindow::onRestoreConfig()
         m_dataModel->restoreToTemplate();
         QMessageBox::information(this, "完成", "配置已成功还原。");
     }
+}
+
+MainWindow::MergeConflictInfo MainWindow::checkRowInsertConflict(int row)
+{
+    MergeConflictInfo info;
+    info.hasConflict = false;
+    info.safePosition = row;
+
+    const auto& allCells = m_dataModel->getAllCells();
+
+    // 检查当前行和上下行是否存在跨越此行的合并单元格
+    for (auto it = allCells.constBegin(); it != allCells.constEnd(); ++it) {
+        const CellData* cell = it.value();
+        if (!cell || !cell->mergedRange.isMerged()) continue;
+
+        const RTMergedRange& range = cell->mergedRange;
+
+        // 情况1：合并区域跨越插入位置（纵向合并）
+        if (range.startRow < row && range.endRow >= row) {
+            info.hasConflict = true;
+            info.message = QString(
+                "当前位置存在纵向合并单元格（第%1-%2行）。\n"
+                "插入可能破坏合并区域的完整性。\n\n"
+                "建议：在第%3行上方或第%4行下方插入。"
+            ).arg(range.startRow + 1)
+                .arg(range.endRow + 1)
+                .arg(range.startRow + 1)
+                .arg(range.endRow + 1);
+
+            info.safePosition = range.endRow + 1;
+            break;
+        }
+
+        // 情况2：正好在合并区域的起始行
+        if (range.startRow == row && range.rowSpan() > 1) {
+            info.hasConflict = true;
+            info.message = QString(
+                "第%1行是合并单元格的起始行（合并至第%2行）。\n"
+                "建议在下方（第%3行之后）插入以保持合并区域完整。"
+            ).arg(row + 1)
+                .arg(range.endRow + 1)
+                .arg(range.endRow + 1);
+            break;
+        }
+    }
+
+    return info;
+}
+
+MainWindow::MergeConflictInfo MainWindow::checkColumnInsertConflict(int col)
+{
+    MergeConflictInfo info;
+    info.hasConflict = false;
+    info.safePosition = col;
+
+    const auto& allCells = m_dataModel->getAllCells();
+
+    for (auto it = allCells.constBegin(); it != allCells.constEnd(); ++it) {
+        const CellData* cell = it.value();
+        if (!cell || !cell->mergedRange.isMerged()) continue;
+
+        const RTMergedRange& range = cell->mergedRange;
+
+        // 情况1：合并区域跨越插入位置（横向合并）
+        if (range.startCol < col && range.endCol >= col) {
+            QString startCol, endCol;
+            int temp = range.startCol;
+            while (temp >= 0) {
+                startCol.prepend(QChar('A' + (temp % 26)));
+                temp = temp / 26 - 1;
+            }
+            temp = range.endCol;
+            while (temp >= 0) {
+                endCol.prepend(QChar('A' + (temp % 26)));
+                temp = temp / 26 - 1;
+            }
+
+            info.hasConflict = true;
+            info.message = QString(
+                "当前位置存在横向合并单元格（%1-%2列）。\n"
+                "插入可能破坏合并区域的完整性。\n\n"
+                "建议：在%3列左侧或%4列右侧插入。"
+            ).arg(startCol).arg(endCol).arg(startCol).arg(endCol);
+
+            info.safePosition = range.endCol + 1;
+            break;
+        }
+
+        // 情况2：正好在合并区域的起始列
+        if (range.startCol == col && range.colSpan() > 1) {
+            QString colName;
+            int temp = col;
+            while (temp >= 0) {
+                colName.prepend(QChar('A' + (temp % 26)));
+                temp = temp / 26 - 1;
+            }
+
+            info.hasConflict = true;
+            info.message = QString(
+                "%1列是合并单元格的起始列。\n"
+                "建议在右侧插入以保持合并区域完整。"
+            ).arg(colName);
+            break;
+        }
+    }
+
+    return info;
+}
+
+bool MainWindow::showInsertRowDialog(int currentRow, int& insertRow, int& count)
+{
+    // 检测冲突
+    MergeConflictInfo conflict = checkRowInsertConflict(currentRow);
+
+    // 创建对话框
+    QDialog dialog(this);
+    dialog.setWindowTitle("插入行");
+    dialog.setModal(true);
+    dialog.resize(380, conflict.hasConflict ? 280 : 200);
+
+    QVBoxLayout* mainLayout = new QVBoxLayout(&dialog);
+
+    // 位置选择组
+    QGroupBox* positionGroup = new QGroupBox("插入位置");
+    QVBoxLayout* positionLayout = new QVBoxLayout(positionGroup);
+
+    QRadioButton* beforeRadio = new QRadioButton(
+        QString("在第 %1 行上方插入").arg(currentRow + 1));
+    QRadioButton* afterRadio = new QRadioButton(
+        QString("在第 %1 行下方插入").arg(currentRow + 1));
+
+    beforeRadio->setChecked(true);
+    positionLayout->addWidget(beforeRadio);
+    positionLayout->addWidget(afterRadio);
+    mainLayout->addWidget(positionGroup);
+
+    // 数量输入
+    QHBoxLayout* countLayout = new QHBoxLayout();
+    countLayout->addWidget(new QLabel("插入数量:"));
+    QSpinBox* countSpinBox = new QSpinBox();
+    countSpinBox->setRange(1, 100);
+    countSpinBox->setValue(1);
+    countSpinBox->setSuffix(" 行");
+    countLayout->addWidget(countSpinBox);
+    countLayout->addStretch();
+    mainLayout->addLayout(countLayout);
+
+    // 冲突警告
+    if (conflict.hasConflict) {
+        QLabel* warningLabel = new QLabel();
+        warningLabel->setText("⚠️ " + conflict.message);
+        warningLabel->setStyleSheet(
+            "QLabel { "
+            "color: #d32f2f; "
+            "background-color: #ffebee; "
+            "border: 1px solid #ef5350; "
+            "border-radius: 4px; "
+            "padding: 8px; "
+            "}"
+        );
+        warningLabel->setWordWrap(true);
+        mainLayout->addWidget(warningLabel);
+    }
+
+    // 按钮
+    QHBoxLayout* buttonLayout = new QHBoxLayout();
+    buttonLayout->addStretch();
+    QPushButton* okButton = new QPushButton("确定");
+    QPushButton* cancelButton = new QPushButton("取消");
+
+    okButton->setDefault(true);
+    okButton->setMinimumWidth(80);
+    cancelButton->setMinimumWidth(80);
+
+    buttonLayout->addWidget(okButton);
+    buttonLayout->addWidget(cancelButton);
+    mainLayout->addLayout(buttonLayout);
+
+    connect(okButton, &QPushButton::clicked, &dialog, &QDialog::accept);
+    connect(cancelButton, &QPushButton::clicked, &dialog, &QDialog::reject);
+
+    // 显示对话框
+    if (dialog.exec() == QDialog::Accepted) {
+        count = countSpinBox->value();
+        insertRow = beforeRadio->isChecked() ? currentRow : currentRow + 1;
+        return true;
+    }
+
+    return false;
+}
+
+bool MainWindow::showInsertColumnDialog(int currentCol, int& insertCol, int& count)
+{
+    // 检测冲突
+    MergeConflictInfo conflict = checkColumnInsertConflict(currentCol);
+
+    // 获取列名
+    QString colName;
+    int temp = currentCol;
+    while (temp >= 0) {
+        colName.prepend(QChar('A' + (temp % 26)));
+        temp = temp / 26 - 1;
+    }
+
+    // 创建对话框
+    QDialog dialog(this);
+    dialog.setWindowTitle("插入列");
+    dialog.setModal(true);
+    dialog.resize(380, conflict.hasConflict ? 280 : 200);
+
+    QVBoxLayout* mainLayout = new QVBoxLayout(&dialog);
+
+    // 位置选择组
+    QGroupBox* positionGroup = new QGroupBox("插入位置");
+    QVBoxLayout* positionLayout = new QVBoxLayout(positionGroup);
+
+    QRadioButton* beforeRadio = new QRadioButton(
+        QString("在 %1 列左侧插入").arg(colName));
+    QRadioButton* afterRadio = new QRadioButton(
+        QString("在 %1 列右侧插入").arg(colName));
+
+    beforeRadio->setChecked(true);
+    positionLayout->addWidget(beforeRadio);
+    positionLayout->addWidget(afterRadio);
+    mainLayout->addWidget(positionGroup);
+
+    // 数量输入
+    QHBoxLayout* countLayout = new QHBoxLayout();
+    countLayout->addWidget(new QLabel("插入数量:"));
+    QSpinBox* countSpinBox = new QSpinBox();
+    countSpinBox->setRange(1, 100);
+    countSpinBox->setValue(1);
+    countSpinBox->setSuffix(" 列");
+    countLayout->addWidget(countSpinBox);
+    countLayout->addStretch();
+    mainLayout->addLayout(countLayout);
+
+    // 冲突警告
+    if (conflict.hasConflict) {
+        QLabel* warningLabel = new QLabel();
+        warningLabel->setText("⚠️ " + conflict.message);
+        warningLabel->setStyleSheet(
+            "QLabel { "
+            "color: #d32f2f; "
+            "background-color: #ffebee; "
+            "border: 1px solid #ef5350; "
+            "border-radius: 4px; "
+            "padding: 8px; "
+            "}"
+        );
+        warningLabel->setWordWrap(true);
+        mainLayout->addWidget(warningLabel);
+    }
+
+    // 按钮
+    QHBoxLayout* buttonLayout = new QHBoxLayout();
+    buttonLayout->addStretch();
+    QPushButton* okButton = new QPushButton("确定");
+    QPushButton* cancelButton = new QPushButton("取消");
+
+    okButton->setDefault(true);
+    okButton->setMinimumWidth(80);
+    cancelButton->setMinimumWidth(80);
+
+    buttonLayout->addWidget(okButton);
+    buttonLayout->addWidget(cancelButton);
+    mainLayout->addLayout(buttonLayout);
+
+    connect(okButton, &QPushButton::clicked, &dialog, &QDialog::accept);
+    connect(cancelButton, &QPushButton::clicked, &dialog, &QDialog::reject);
+
+    // 显示对话框
+    if (dialog.exec() == QDialog::Accepted) {
+        count = countSpinBox->value();
+        insertCol = beforeRadio->isChecked() ? currentCol : currentCol + 1;
+        return true;
+    }
+
+    return false;
 }
 
 

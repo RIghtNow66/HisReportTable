@@ -13,6 +13,9 @@
 #include <QPushButton>
 #include <QSortFilterProxyModel>
 #include <QDateTime> 
+#include <QGroupBox>
+#include <QRadioButton>
+#include <QSpinBox>
 
 #include "DataBindingConfig.h" 
 #include "EnhancedTableView.h"
@@ -55,29 +58,6 @@ private slots:
     void onFillDownFormula();
 
 private:
-    void setupUI();
-    void setupToolBar();
-    void setupFormulaBar();
-    void setupTableView();
-    void setupContextMenu();
-    void setupFindDialog();
-    void updateFormulaBar(const QModelIndex& index);
-
-    void enterFormulaEditMode();
-    void exitFormulaEditMode();
-    bool isInFormulaEditMode() const;
-
-    void applyRowColumnSizes();
-
-    QString adjustFormulaReferences(const QString& formula, int rowOffset);
-
-    int findFillEndRow(int currentRow, int currentCol);
-
-    void exportData();
-    void exportTemplate();
-    QString generateFileName(const QString& suffix);
-
-private:
     // UI组件
     QWidget* m_centralWidget;
     QVBoxLayout* m_mainLayout;
@@ -107,6 +87,44 @@ private:
     bool m_updating;
     bool m_formulaEditMode; // 新增：标识是否在公式编辑模式
     QModelIndex m_formulaEditingIndex; // 新增：记录正在编辑公式的单元格
+
+    struct MergeConflictInfo {
+        bool hasConflict;
+        QString message;
+        int safePosition;
+    };
+
+private:
+    void setupUI();
+    void setupToolBar();
+    void setupFormulaBar();
+    void setupTableView();
+    void setupContextMenu();
+    void setupFindDialog();
+    void updateFormulaBar(const QModelIndex& index);
+
+    void enterFormulaEditMode();
+    void exitFormulaEditMode();
+    bool isInFormulaEditMode() const;
+
+    void applyRowColumnSizes();
+
+    QString adjustFormulaReferences(const QString& formula, int rowOffset);
+
+    int findFillEndRow(int currentRow, int currentCol);
+
+    void exportData();
+    void exportTemplate();
+    QString generateFileName(const QString& suffix);
+
+    // 冲突检测方法
+    MergeConflictInfo checkRowInsertConflict(int row);
+    MergeConflictInfo checkColumnInsertConflict(int col);
+
+    // 插入对话框方法
+    bool showInsertRowDialog(int currentRow, int& insertRow, int& count);
+    bool showInsertColumnDialog(int currentCol, int& insertCol, int& count);
+
 };
 
 #endif // MAINWINDOW_H

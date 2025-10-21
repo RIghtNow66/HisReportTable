@@ -86,6 +86,8 @@ bool MonthReportParser::scanAndParse()
     return true;
 }
 
+
+
 bool MonthReportParser::findDateMarker()
 {
     int totalRows = m_model->rowCount();
@@ -352,14 +354,27 @@ bool MonthReportParser::executeQueries(QProgressDialog* progress)
 void MonthReportParser::restoreToTemplate()
 {
     qDebug() << "恢复月报到模板初始状态...";
-    m_dataCache.clear();
+
+
+    // ===== 添加空指针检查 =====
+    int restoredCount = 0;
+    int nullCount = 0;
+
     for (const auto& task : m_queryTasks) {
-        if (task.cell) {
-            task.cell->value = task.cell->originalMarker;
-            task.cell->queryExecuted = false;
-            task.cell->querySuccess = false;
+        if (!task.cell) {  
+            nullCount++;
+            qWarning() << QString("跳过无效单元格：行%1 列%2").arg(task.row).arg(task.col);
+            continue;
         }
+
+        // 恢复原始标记
+        task.cell->value = task.cell->originalMarker;
+        task.cell->queryExecuted = false;
+        task.cell->querySuccess = false;
+        restoredCount++;
     }
+
+    qDebug() << QString("还原完成：成功%1个，跳过%2个无效单元格").arg(restoredCount).arg(nullCount);
 }
 
 QString MonthReportParser::extractTime(const QString& text)
@@ -455,8 +470,6 @@ void MonthReportParser::collectActualDays()
 {
     m_actualDays.clear();
 
-    qDebug() << "开始收集月报实际日期...";
-
     for (int row = 0; row < m_model->rowCount(); ++row) {
         for (int col = 0; col < m_model->columnCount(); ++col) {
             CellData* cell = m_model->getCell(row, col);
@@ -488,10 +501,6 @@ void MonthReportParser::collectActualDays()
         if (i > 0) daysStr += ", ";
         daysStr += QString::number(sortedDays[i]);
     }
-
-    qDebug() << QString("收集到 %1 个有效日期：[%2]")
-        .arg(m_actualDays.size())
-        .arg(daysStr);
 }
 
 
@@ -524,8 +533,6 @@ QList<BaseReportParser::TimeBlock> MonthReportParser::identifyTimeBlocks()
     QList<int> sortedDays = m_actualDays.values();
     std::sort(sortedDays.begin(), sortedDays.end());
 
-    qDebug() << QString("月报查询模式：每天单独查询（共%1天）").arg(sortedDays.size());
-
     for (int day : sortedDays) {
         QString dateStr = QString("%1-%2").arg(m_baseYearMonth).arg(day, 2, 10, QChar('0'));
 
@@ -543,11 +550,6 @@ QList<BaseReportParser::TimeBlock> MonthReportParser::identifyTimeBlocks()
         block.endDate = dateStr;
 
         blocks.append(block);
-
-        //qDebug() << QString("  生成查询块 %1: %2 %3")
-        //    .arg(blocks.size())
-        //    .arg(dateStr)
-        //    .arg(baseTime.toString("HH:mm:ss"));
     }
 
     return blocks;
@@ -631,8 +633,6 @@ bool MonthReportParser::analyzeAndPrefetch()
         }
     }
 
-    // 记录统计信息
-    qDebug() << QString("月报预查询完成: 成功 %1/%2").arg(successCount).arg(blocks.size());
     m_lastPrefetchSuccessCount = successCount;
     m_lastPrefetchTotalCount = blocks.size();
 
