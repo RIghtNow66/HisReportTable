@@ -12,6 +12,7 @@
 #include <limits>              // 用于 std::numeric_limits
 #include <cmath>               // 用于 std::isnan, std::isinf
 #include <QMessageBox>
+#include <QRegularExpression>
 
 #include "reportdatamodel.h"
 #include "formulaengine.h"
@@ -34,6 +35,7 @@ ReportDataModel::ReportDataModel(QObject* parent)
     , m_formulaEngine(new FormulaEngine(this))
     , m_reportType(NORMAL_EXCEL) // 默认是普通Excel
     , m_parser(nullptr)
+    , m_editMode(true)
 {
 }
 
@@ -89,9 +91,71 @@ bool ReportDataModel::loadReportTemplate(const QString& fileName)
         qDebug() << "加载普通Excel文件。";
     }
 
+    setEditMode(true);
     // 无论加载何种类型，都通知视图进行一次初始显示
     notifyDataChanged();
     return true;
+}
+
+// ===== 检查公式的依赖单元格是否已计算 =====
+bool ReportDataModel::checkFormulaDependenciesReady(int row, int col)
+{
+    const CellData* cell = getCell(row, col);
+    if (!cell || !cell->hasFormula) {
+        return true;  // 非公式单元格认为已就绪
+    }
+
+    QString formula = cell->formula;
+
+    // 提取公式中的所有单元格引用（如 A1, B2, I5, J5）
+    QRegularExpression cellRefRegex(R"([A-Z]+\d+)");
+    QRegularExpressionMatchIterator it = cellRefRegex.globalMatch(formula);
+
+    while (it.hasNext()) {
+        QRegularExpressionMatch match = it.next();
+        QString cellRef = match.captured(0);
+
+        // 解析单元格坐标
+        QPoint refPos = parseCellReference(cellRef);
+        if (refPos.x() == -1 || refPos.y() == -1) {
+            continue;  // 无效引用，跳过
+        }
+
+        // 检查被引用的单元格
+        const CellData* refCell = getCell(refPos.x(), refPos.y());
+        if (refCell && refCell->hasFormula) {
+            // 如果引用的单元格也是公式，检查是否已计算
+            if (!refCell->formulaCalculated) {
+                return false;  // 依赖未就绪
+            }
+        }
+        // 如果引用的是数据单元格（非公式），默认已就绪
+    }
+
+    return true;  // 所有依赖都已就绪
+}
+
+// ===== 解析单元格引用（如 "I5" -> QPoint(4, 8)） =====
+QPoint ReportDataModel::parseCellReference(const QString& cellRef) const
+{
+    QRegularExpression regex(R"(([A-Z]+)(\d+))");
+    QRegularExpressionMatch match = regex.match(cellRef);
+
+    if (!match.hasMatch()) {
+        return QPoint(-1, -1);
+    }
+
+    QString colStr = match.captured(1);
+    int rowNum = match.captured(2).toInt();
+
+    // 转换列名为列索引（A=0, B=1, ..., Z=25, AA=26, ...）
+    int col = 0;
+    for (int i = 0; i < colStr.length(); ++i) {
+        col = col * 26 + (colStr[i].unicode() - 'A' + 1);
+    }
+    col -= 1;  // 转换为0基索引
+
+    return QPoint(rowNum - 1, col);  // 转换为0基索引
 }
 
 
@@ -99,17 +163,27 @@ void ReportDataModel::recalculateAllFormulas()
 {
     qDebug() << "开始增量计算公式...";
 
-    // ===== 【关键修改】每次刷新前，强制重置所有公式为未计算状态 =====
+    // ===== 每次刷新前，强制重置所有公式为未计算状态 =====
     for (auto it = m_cells.begin(); it != m_cells.end(); ++it) {
         CellData* cell = it.value();
         if (cell && cell->hasFormula) {
-            cell->formulaCalculated = false;  // ← 强制重新计算
+            cell->formulaCalculated = false;  // 强制重新计算
         }
     }
 
-    // ===== 按依赖关系多轮计算 =====
-    int maxIterations = 10;  // 防止循环依赖导致死循环
+    // ===== 按依赖层级多轮计算 =====
+    int maxIterations = 5;  // ← 增加迭代次数，防止深层依赖
     int iteration = 0;
+    int totalFormulas = 0;
+
+    // 统计总公式数
+    for (auto it = m_cells.constBegin(); it != m_cells.constEnd(); ++it) {
+        if (it.value() && it.value()->hasFormula) {
+            totalFormulas++;
+        }
+    }
+
+    qDebug() << QString("待计算公式总数: %1").arg(totalFormulas);
 
     while (iteration < maxIterations) {
         int calculatedCount = 0;
@@ -125,9 +199,17 @@ void ReportDataModel::recalculateAllFormulas()
                 }
 
                 const QPoint& pos = it.key();
-                calculateFormula(pos.x(), pos.y());
-                calculatedCount++;
-                hasProgress = true;
+
+                // ===== 【新增】检查依赖是否已计算 =====
+                if (checkFormulaDependenciesReady(pos.x(), pos.y())) {
+                    calculateFormula(pos.x(), pos.y());
+                    calculatedCount++;
+                    hasProgress = true;
+                }
+                else {
+                    // 依赖未就绪，本轮跳过
+                    skippedCount++;
+                }
             }
         }
 
@@ -136,170 +218,21 @@ void ReportDataModel::recalculateAllFormulas()
 
         // 如果这轮没有任何进展，说明有循环依赖或所有公式都已计算
         if (!hasProgress) {
+            if (skippedCount > 0) {
+                qWarning() << QString("检测到 %1 个公式无法计算，可能存在循环依赖").arg(skippedCount);
+            }
             break;
         }
 
         iteration++;
     }
 
+    if (iteration >= maxIterations) {
+        qWarning() << "公式计算达到最大迭代次数，可能存在复杂依赖链";
+    }
+
     notifyDataChanged();
 }
-
-// =====统一的数据刷新入口 =====
-//bool ReportDataModel::refreshReportData(QProgressDialog* progress)
-//{
-//    // ===== 【步骤1】检测变化类型 =====
-//    ChangeType changeType = detectChanges();
-//
-//    QString changeMsg;
-//    bool needQuery = false;  // 是否需要查询数据
-//
-//    switch (changeType) {
-//    case NO_CHANGE:
-//        changeMsg = "数据已是最新，无需刷新。";
-//        QMessageBox::information(nullptr, "无需刷新", changeMsg);
-//        saveRefreshSnapshot();  // 确保标记首次刷新完成
-//        return true;
-//
-//    case FORMULA_ONLY: {
-//        int newFormulaCount = 0;
-//        for (auto it = m_cells.constBegin(); it != m_cells.constEnd(); ++it) {
-//            if (it.value() && it.value()->hasFormula && !it.value()->formulaCalculated) {
-//                newFormulaCount++;
-//            }
-//        }
-//        changeMsg = QString("检测到 %1 个新增公式，是否计算？\n\n注意：不会重新查询数据。")
-//            .arg(newFormulaCount);
-//        needQuery = false;  // 【关键】只有公式变化，不需要查询
-//        break;
-//    }
-//
-//    case BINDING_ONLY: {
-//        int newMarkerCount = 0;
-//        if (m_reportType == DAY_REPORT && m_parser) {
-//            // 计算新增的 #d# 标记数量
-//            for (auto it = m_cells.constBegin(); it != m_cells.constEnd(); ++it) {
-//                const CellData* cell = it.value();
-//                if (cell && cell->cellType == CellData::DataMarker && !cell->queryExecuted) {
-//                    newMarkerCount++;
-//                }
-//            }
-//        }
-//        else {
-//            // 普通模式：计算新增 ## 绑定
-//            QList<QString> newBindings = getNewBindings();
-//            newMarkerCount = newBindings.size();
-//        }
-//
-//        changeMsg = QString("检测到 %1 个新增数据标记，是否查询？\n\n将查询新数据并重新计算所有公式。")
-//            .arg(newMarkerCount);
-//        needQuery = true;  // 需要查询
-//        break;
-//    }
-//
-//    case MIXED_CHANGE: {
-//        if (m_isFirstRefresh) {
-//            // 首次刷新：静默执行
-//            needQuery = true;
-//        }
-//        else {
-//            // 后续刷新：弹确认框
-//            int newFormulaCount = 0;
-//            for (auto it = m_cells.constBegin(); it != m_cells.constEnd(); ++it) {
-//                if (it.value() && it.value()->hasFormula && !it.value()->formulaCalculated) {
-//                    newFormulaCount++;
-//                }
-//            }
-//
-//            int newDataCount = 0;
-//            if (m_reportType == DAY_REPORT) {
-//                // 统计新增的 #d# 标记
-//                for (auto it = m_cells.constBegin(); it != m_cells.constEnd(); ++it) {
-//                    const CellData* cell = it.value();
-//                    if (cell && cell->cellType == CellData::DataMarker && !cell->queryExecuted) {
-//                        newDataCount++;
-//                    }
-//                }
-//            }
-//            else {
-//                newDataCount = getNewBindings().size();
-//            }
-//
-//            changeMsg = QString("检测到数据变更：\n"
-//                "• 新增数据标记: %1 个\n"
-//                "• 新增公式: %2 个\n\n"
-//                "是否执行完整刷新？")
-//                .arg(newDataCount)
-//                .arg(newFormulaCount);
-//            needQuery = true;
-//        }
-//        break;
-//    }
-//    }
-//
-//    // ===== 【步骤2】用户确认（首次刷新跳过） =====
-//    if (!m_isFirstRefresh && !changeMsg.isEmpty()) {
-//        auto reply = QMessageBox::question(nullptr, "确认刷新", changeMsg,
-//            QMessageBox::Yes | QMessageBox::No,
-//            QMessageBox::Yes);
-//        if (reply == QMessageBox::No) {
-//            return false;
-//        }
-//    }
-//
-//    // ===== 【步骤3】执行刷新操作 =====
-//    bool completedSuccessfully = false;
-//    int actualSuccessCount = 0;
-//
-//    // 根据 needQuery 决定是否查询
-//    if (needQuery) {
-//        // 需要查询数据
-//        if ((m_reportType == DAY_REPORT || m_reportType == MONTH_REPORT) && m_parser) {
-//            completedSuccessfully = m_parser->executeQueries(progress);
-//
-//            // 统计实际成功的数据点
-//            for (auto it = m_cells.constBegin(); it != m_cells.constEnd(); ++it) {
-//                const CellData* cell = it.value();
-//                if (cell && cell->cellType == CellData::DataMarker &&
-//                    cell->queryExecuted && cell->querySuccess) {
-//                    actualSuccessCount++;
-//                }
-//            }
-//        }
-//        else if (m_reportType == NORMAL_EXCEL) {
-//            qDebug() << "普通Excel不支持数据查询";
-//            completedSuccessfully = true;
-//        }
-//    }
-//    else {
-//        // 不需要查询，直接标记为成功
-//        completedSuccessfully = true;
-//    }
-//    recalculateAllFormulas(); 
-//
-//    // 无论是否查询，都计算公式
-//    if ((m_reportType == DAY_REPORT || m_reportType == MONTH_REPORT) && m_parser) {
-//        int totalTasks = m_parser->getPendingQueryCount();
-//        if (totalTasks > 0) {
-//            double successRate = static_cast<double>(actualSuccessCount) / totalTasks;
-//            if (successRate >= 0.5) {  // 至少50%的数据成功
-//                saveRefreshSnapshot();
-//                qDebug() << QString("保存快照: 成功率 %1%").arg(successRate * 100, 0, 'f', 1);
-//            }
-//            else {
-//                qWarning() << QString("成功率过低 (%1%)，不保存快照").arg(successRate * 100, 0, 'f', 1);
-//            }
-//        }
-//        else {
-//            saveRefreshSnapshot();  // 没有数据任务，直接保存
-//        }
-//    }
-//    else {
-//        saveRefreshSnapshot();  // 非日报模式，直接保存
-//    }
-//
-//    return completedSuccessfully;
-//}
 
 bool ReportDataModel::refreshReportData(QProgressDialog* progress)
 {
@@ -430,6 +363,8 @@ bool ReportDataModel::refreshReportData(QProgressDialog* progress)
     qDebug() << "数据填充完成，开始计算公式...";
     recalculateAllFormulas();
 
+    bool shouldEnterRunMode = false;
+
     // 保存快照
     if ((m_reportType == DAY_REPORT || m_reportType == MONTH_REPORT) && m_parser) {
         int totalTasks = m_parser->getPendingQueryCount();
@@ -437,18 +372,26 @@ bool ReportDataModel::refreshReportData(QProgressDialog* progress)
             double successRate = static_cast<double>(actualSuccessCount) / totalTasks;
             if (successRate >= 0.5) {
                 saveRefreshSnapshot();
+                shouldEnterRunMode = true;  // 进入运行模式
                 qDebug() << QString("保存快照: 成功率 %1%").arg(successRate * 100, 0, 'f', 1);
             }
             else {
+                shouldEnterRunMode = false;  // 保持编辑模式，允许用户修改重试
                 qWarning() << QString("成功率过低 (%1%)，不保存快照").arg(successRate * 100, 0, 'f', 1);
             }
         }
         else {
             saveRefreshSnapshot();
+            shouldEnterRunMode = true;
         }
     }
     else {
         saveRefreshSnapshot();
+        shouldEnterRunMode = true;
+    }
+
+    if (shouldEnterRunMode) {
+        setEditMode(false);
     }
 
     return completedSuccessfully;
@@ -475,6 +418,7 @@ void ReportDataModel::restoreToTemplate()
     m_lastSnapshot.dataMarkerCells.clear();
     m_isFirstRefresh = true;  // ← 重置首次刷新标记
 
+    setEditMode(true);
     qDebug() << "已还原所有公式为未计算状态";
     notifyDataChanged();
 }
@@ -686,18 +630,34 @@ Qt::ItemFlags ReportDataModel::flags(const QModelIndex& index) const
 {
     if (!index.isValid()) return Qt::NoItemFlags;
 
+    // ===== 运行模式下只读 =====
+    if (!m_editMode) {
+        return Qt::ItemIsEnabled | Qt::ItemIsSelectable;
+    }
+
     const CellData* cell = getCell(index.row(), index.column());
     if (cell && cell->mergedRange.isMerged()) {
-        // 如果不是合并单元格的主单元格，则只启用，不可选择/编辑
         if (index.row() != cell->mergedRange.startRow || index.column() != cell->mergedRange.startCol) {
             return Qt::ItemIsEnabled;
         }
     }
 
-    // 所有主单元格或非合并单元格都可编辑
     return Qt::ItemIsEnabled | Qt::ItemIsSelectable | Qt::ItemIsEditable;
 }
 
+// ===== 设置编辑模式 =====
+void ReportDataModel::setEditMode(bool editMode)
+{
+    if (m_editMode == editMode) return;
+
+    m_editMode = editMode;
+    emit editModeChanged(editMode);
+
+    // 通知视图更新所有单元格的可编辑状态
+    emit dataChanged(index(0, 0), index(m_maxRow - 1, m_maxCol - 1));
+
+    qDebug() << (editMode ? "进入编辑模式" : "进入运行模式");
+}
 
 QVariant ReportDataModel::headerData(int section, Qt::Orientation orientation, int role) const
 {

@@ -57,6 +57,9 @@ private slots:
 
     void onFillDownFormula();
 
+    // 模式切换响应
+    void onEditModeChanged(bool editMode);
+
 private:
     // UI组件
     QWidget* m_centralWidget;
@@ -94,6 +97,12 @@ private:
         int safePosition;
     };
 
+    QAction* m_insertRowAction;
+    QAction* m_insertColAction;
+    QAction* m_deleteRowAction;
+    QAction* m_deleteColAction;
+    QAction* m_fillFormulaAction;
+
 private:
     void setupUI();
     void setupToolBar();
@@ -124,6 +133,9 @@ private:
     // 插入对话框方法
     bool showInsertRowDialog(int currentRow, int& insertRow, int& count);
     bool showInsertColumnDialog(int currentCol, int& insertCol, int& count);
+
+    // 模式重新设置函数
+    void updateUIForEditMode(bool editMode);
 
 };
 

@@ -122,7 +122,7 @@ bool ExcelHandler::loadFromFile(const QString& fileName, ReportDataModel* model)
         return false;
     }
 
-    // 3. 【后处理】统一合并区域的样式
+    // 3. 统一合并区域的样式
     // 这个逻辑很重要，它会为合并区域中的空单元格填充上主单元格的样式（包括边框）
     for (const auto& mergedRange : mergedRanges) {
         CellData* mainCell = model->getCell(mergedRange.startRow, mergedRange.startCol);
@@ -379,7 +379,6 @@ void ExcelHandler::convertFromExcelStyle(const QXlsx::Format& excelFormat, RTCel
         // 如果成功读取到字号，就使用它
         cellStyle.font.setPointSize(fontSize);
     }
-    // 如果读取失败(fontSize为0)，则会使用在Cell.h中设置的默认字号(10)
 
     // 读取字体名称
     QString fontName = excelFormat.fontName();
@@ -397,8 +396,16 @@ void ExcelHandler::convertFromExcelStyle(const QXlsx::Format& excelFormat, RTCel
     // 2. 背景颜色处理：默认白色，有颜色时统一为浅灰色
     // (默认背景已在Cell.h中设为白色)
     if (excelFormat.fillPattern() != QXlsx::Format::PatternNone) {
-        // 只要Excel单元格有任何填充模式，就统一设置为浅灰色
-        cellStyle.backgroundColor = QColor(Qt::white); // 浅灰色
+        QColor bgColor = excelFormat.patternBackgroundColor();
+
+        // 如果成功读取到颜色，使用原始颜色
+        if (bgColor.isValid()) {
+            cellStyle.backgroundColor = bgColor;
+        }
+        else {
+            // 读取失败（可能是主题色），使用白色兜底
+            cellStyle.backgroundColor = QColor(Qt::white);
+        }
     }
 
     // ===== 对齐方式 =====

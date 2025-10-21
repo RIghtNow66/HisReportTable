@@ -126,19 +126,23 @@ void MainWindow::setupTableView()
         });
 
     connect(m_tableView, &QTableView::clicked, this, &MainWindow::onCellClicked);
+
+    connect(m_dataModel, &ReportDataModel::editModeChanged,
+        this, &MainWindow::onEditModeChanged);
 }
 
 void MainWindow::setupContextMenu()
 {
-    m_contextMenu = new QMenu(this);
+    m_contextMenu = new QMenu(this);  // 
 
-    m_contextMenu->addAction("插入行", this, &MainWindow::onInsertRow);
-    m_contextMenu->addAction("插入列", this, &MainWindow::onInsertColumn);
+    // ===== 保存操作引用，以便控制启用/禁用 =====
+    m_insertRowAction = m_contextMenu->addAction("插入行", this, &MainWindow::onInsertRow);
+    m_insertColAction = m_contextMenu->addAction("插入列", this, &MainWindow::onInsertColumn);
     m_contextMenu->addSeparator();
-    m_contextMenu->addAction("删除行", this, &MainWindow::onDeleteRow);
-    m_contextMenu->addAction("删除列", this, &MainWindow::onDeleteColumn);
+    m_deleteRowAction = m_contextMenu->addAction("删除行", this, &MainWindow::onDeleteRow);
+    m_deleteColAction = m_contextMenu->addAction("删除列", this, &MainWindow::onDeleteColumn);
     m_contextMenu->addSeparator();
-    m_contextMenu->addAction("向下填充公式", this, &MainWindow::onFillDownFormula);
+    m_fillFormulaAction = m_contextMenu->addAction("向下填充公式", this, &MainWindow::onFillDownFormula);
 }
 
 void MainWindow::setupFindDialog()
@@ -542,6 +546,10 @@ void MainWindow::onFormulaEditFinished()
     if (m_updating || !m_currentIndex.isValid())
         return;
 
+    if (!m_dataModel->isEditMode()) {
+        return;
+    }
+
     // 退出公式编辑模式
     if (m_formulaEditMode)
     {
@@ -632,6 +640,10 @@ void MainWindow::onFormulaTextChanged()
 {
     if (m_updating)
     {
+        return;
+    }
+
+    if (!m_dataModel->isEditMode()) {
         return;
     }
 
@@ -1119,6 +1131,31 @@ bool MainWindow::showInsertColumnDialog(int currentCol, int& insertCol, int& cou
     }
 
     return false;
+}
+
+void MainWindow::onEditModeChanged(bool editMode)
+{
+    updateUIForEditMode(editMode);
+}
+
+void MainWindow::updateUIForEditMode(bool editMode)
+{
+    // 控制公式编辑框
+    m_formulaEdit->setReadOnly(!editMode);
+
+    // 控制右键菜单项
+    m_insertRowAction->setEnabled(editMode);
+    m_insertColAction->setEnabled(editMode);
+    m_deleteRowAction->setEnabled(editMode);
+    m_deleteColAction->setEnabled(editMode);
+    m_fillFormulaAction->setEnabled(editMode);
+
+    if (editMode) {
+        m_formulaEdit->setStyleSheet("QLineEdit { border: 1px solid gray; padding: 2px; }");
+    }
+    else {
+        m_formulaEdit->setStyleSheet("QLineEdit { border: 1px solid gray; padding: 2px; background-color: #f0f0f0; }");
+    }
 }
 
 

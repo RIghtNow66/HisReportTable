@@ -111,18 +111,29 @@ public:
 
     bool hasExecutedQueries() const;
 
+    // 模式管理接口
+    void setEditMode(bool editMode);
+    bool isEditMode() const { return m_editMode; }
+
+
 signals:
     void cellChanged(int row, int col);
-    //void dataLoadCompleted(bool success, QString message);
 
-private:
-    QSet<QString> getCurrentBindings() const;     // 获取当前所有绑定标记
-    QSet<QPoint> getCurrentFormulas() const;      // 获取当前所有公式位置
-    QList<QString> getNewBindings() const;        // 获取新增的绑定标记
+    // 模式变化信号 
+    void editModeChanged(bool editMode);
 
 private:
     bool loadFromExcelFile(const QString& fileName);
 
+    QSet<QString> getCurrentBindings() const;     // 获取当前所有绑定标记
+    QSet<QPoint> getCurrentFormulas() const;      // 获取当前所有公式位置
+    QList<QString> getNewBindings() const;        // 获取新增的绑定标记
+
+    // ===== 公式依赖检查 =====
+    bool checkFormulaDependenciesReady(int row, int col);
+    QPoint parseCellReference(const QString& cellRef) const;
+
+private:
     QHash<QPoint, CellData*> m_cells;        // 改为CellData*
     int m_maxRow;
     int m_maxCol;
@@ -147,6 +158,8 @@ private:
 
     RefreshSnapshot m_lastSnapshot;    // 上次刷新的快照
     bool m_isFirstRefresh = true;      // 是否首次刷新
+
+    bool m_editMode = true;  // 默认为编辑模式
 
 };
 
