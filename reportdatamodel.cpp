@@ -100,39 +100,74 @@ bool ReportDataModel::loadReportTemplate(const QString& fileName)
 // ===== 检查公式的依赖单元格是否已计算 =====
 bool ReportDataModel::checkFormulaDependenciesReady(int row, int col)
 {
+    QSet<QPoint> visited;
+    if (detectCircularDependency(row, col, visited)) {
+        qWarning() << QString("检测到循环依赖: 单元格(%1, %2)").arg(row).arg(col);
+        return false;
+    }
+
     const CellData* cell = getCell(row, col);
     if (!cell || !cell->hasFormula) {
-        return true;  // 非公式单元格认为已就绪
+        return true;
     }
 
     QString formula = cell->formula;
-
-    // 提取公式中的所有单元格引用（如 A1, B2, I5, J5）
     QRegularExpression cellRefRegex(R"([A-Z]+\d+)");
     QRegularExpressionMatchIterator it = cellRefRegex.globalMatch(formula);
 
     while (it.hasNext()) {
         QRegularExpressionMatch match = it.next();
         QString cellRef = match.captured(0);
-
-        // 解析单元格坐标
         QPoint refPos = parseCellReference(cellRef);
+
         if (refPos.x() == -1 || refPos.y() == -1) {
-            continue;  // 无效引用，跳过
+            continue;
         }
 
-        // 检查被引用的单元格
         const CellData* refCell = getCell(refPos.x(), refPos.y());
-        if (refCell && refCell->hasFormula) {
-            // 如果引用的单元格也是公式，检查是否已计算
-            if (!refCell->formulaCalculated) {
-                return false;  // 依赖未就绪
-            }
+        if (refCell && refCell->hasFormula && !refCell->formulaCalculated) {
+            return false;
         }
-        // 如果引用的是数据单元格（非公式），默认已就绪
     }
 
-    return true;  // 所有依赖都已就绪
+    return true;
+}
+
+bool ReportDataModel::detectCircularDependency(int row, int col, QSet<QPoint>& visitedCells)
+{
+    QPoint current(row, col);
+
+    if (visitedCells.contains(current)) {
+        return true;  // 检测到循环
+    }
+
+    const CellData* cell = getCell(row, col);
+    if (!cell || !cell->hasFormula) {
+        return false;
+    }
+
+    visitedCells.insert(current);
+
+    QString formula = cell->formula;
+    QRegularExpression cellRefRegex(R"([A-Z]+\d+)");
+    QRegularExpressionMatchIterator it = cellRefRegex.globalMatch(formula);
+
+    while (it.hasNext()) {
+        QRegularExpressionMatch match = it.next();
+        QString cellRef = match.captured(0);
+        QPoint refPos = parseCellReference(cellRef);
+
+        if (refPos.x() == -1 || refPos.y() == -1) {
+            continue;
+        }
+
+        if (detectCircularDependency(refPos.x(), refPos.y(), visitedCells)) {
+            return true;
+        }
+    }
+
+    visitedCells.remove(current);
+    return false;
 }
 
 // ===== 解析单元格引用（如 "I5" -> QPoint(4, 8)） =====
@@ -163,63 +198,61 @@ void ReportDataModel::recalculateAllFormulas()
 {
     qDebug() << "开始增量计算公式...";
 
-    // ===== 每次刷新前，强制重置所有公式为未计算状态 =====
-    for (auto it = m_cells.begin(); it != m_cells.end(); ++it) {
-        CellData* cell = it.value();
-        if (cell && cell->hasFormula) {
-            cell->formulaCalculated = false;  // 强制重新计算
-        }
-    }
-
-    // ===== 按依赖层级多轮计算 =====
-    int maxIterations = 5;  // ← 增加迭代次数，防止深层依赖
-    int iteration = 0;
-    int totalFormulas = 0;
-
-    // 统计总公式数
-    for (auto it = m_cells.constBegin(); it != m_cells.constEnd(); ++it) {
-        if (it.value() && it.value()->hasFormula) {
-            totalFormulas++;
-        }
-    }
-
-    qDebug() << QString("待计算公式总数: %1").arg(totalFormulas);
-
-    while (iteration < maxIterations) {
-        int calculatedCount = 0;
-        int skippedCount = 0;
-        bool hasProgress = false;
-
-        for (auto it = m_cells.constBegin(); it != m_cells.constEnd(); ++it) {
+    // 如果脏标记为空，说明是首次计算或全量刷新
+    if (m_dirtyFormulas.isEmpty()) {
+        qDebug() << "脏标记为空，标记所有公式";
+        for (auto it = m_cells.begin(); it != m_cells.end(); ++it) {
             CellData* cell = it.value();
             if (cell && cell->hasFormula) {
-                if (cell->formulaCalculated) {
-                    skippedCount++;
-                    continue;
-                }
+                cell->formulaCalculated = false;
+                m_dirtyFormulas.insert(it.key());
+            }
+        }
+    }
 
-                const QPoint& pos = it.key();
+    if (m_dirtyFormulas.isEmpty()) {
+        qDebug() << "没有需要计算的公式";
+        return;
+    }
 
-                // ===== 【新增】检查依赖是否已计算 =====
-                if (checkFormulaDependenciesReady(pos.x(), pos.y())) {
-                    calculateFormula(pos.x(), pos.y());
-                    calculatedCount++;
-                    hasProgress = true;
-                }
-                else {
-                    // 依赖未就绪，本轮跳过
-                    skippedCount++;
-                }
+    qDebug() << QString("待计算公式总数: %1").arg(m_dirtyFormulas.size());
+
+    int maxIterations = 5;
+    int iteration = 0;
+
+    while (iteration < maxIterations && !m_dirtyFormulas.isEmpty()) {
+        int calculatedCount = 0;
+        QSet<QPoint> stillDirty;
+
+        for (const QPoint& pos : m_dirtyFormulas) {
+            CellData* cell = getCell(pos.x(), pos.y());
+
+            if (!cell || !cell->hasFormula) {
+                continue;
+            }
+
+            if (cell->formulaCalculated) {
+                continue;
+            }
+
+            // 检查依赖是否已就绪
+            if (checkFormulaDependenciesReady(pos.x(), pos.y())) {
+                calculateFormula(pos.x(), pos.y());
+                calculatedCount++;
+            }
+            else {
+                stillDirty.insert(pos);
             }
         }
 
-        qDebug() << QString("第 %1 轮计算: 计算 %2 个, 跳过 %3 个")
-            .arg(iteration + 1).arg(calculatedCount).arg(skippedCount);
+        m_dirtyFormulas = stillDirty;
 
-        // 如果这轮没有任何进展，说明有循环依赖或所有公式都已计算
-        if (!hasProgress) {
-            if (skippedCount > 0) {
-                qWarning() << QString("检测到 %1 个公式无法计算，可能存在循环依赖").arg(skippedCount);
+        qDebug() << QString("第 %1 轮计算: 计算 %2 个, 剩余 %3 个")
+            .arg(iteration + 1).arg(calculatedCount).arg(m_dirtyFormulas.size());
+
+        if (calculatedCount == 0) {
+            if (!m_dirtyFormulas.isEmpty()) {
+                qWarning() << QString("检测到 %1 个公式无法计算，可能存在循环依赖").arg(m_dirtyFormulas.size());
             }
             break;
         }
@@ -227,10 +260,11 @@ void ReportDataModel::recalculateAllFormulas()
         iteration++;
     }
 
-    if (iteration >= maxIterations) {
-        qWarning() << "公式计算达到最大迭代次数，可能存在复杂依赖链";
+    if (iteration >= maxIterations && !m_dirtyFormulas.isEmpty()) {
+        qWarning() << "公式计算达到最大迭代次数";
     }
 
+    m_dirtyFormulas.clear();
     notifyDataChanged();
 }
 
@@ -330,6 +364,13 @@ bool ReportDataModel::refreshReportData(QProgressDialog* progress)
         }
     }
 
+    if (needQuery && (m_reportType == DAY_REPORT || m_reportType == MONTH_REPORT) && m_parser) {
+        if (!m_parser->isCacheValid()) {
+            qDebug() << "缓存已过期，将重新查询";
+            m_parser->invalidateCache();
+        }
+    }
+
     // ===== 【步骤3】执行刷新操作 =====
     bool completedSuccessfully = false;
     int actualSuccessCount = 0;
@@ -359,9 +400,20 @@ bool ReportDataModel::refreshReportData(QProgressDialog* progress)
         completedSuccessfully = true;
     }
 
+    // 在查询完成后添加
+    if (completedSuccessfully) {
+        qDebug() << "数据填充完成，开始计算公式...";
+        recalculateAllFormulas();
+
+        // 执行内存优化
+        optimizeMemory();
+    }
+
     // ===== 【修改】在数据填充完成后，再计算公式 =====
     qDebug() << "数据填充完成，开始计算公式...";
     recalculateAllFormulas();
+    
+    optimizeMemory();
 
     bool shouldEnterRunMode = false;
 
@@ -403,20 +455,20 @@ void ReportDataModel::restoreToTemplate()
         m_parser->restoreToTemplate();
     }
 
-    // ===== 【关键修改】恢复所有公式单元格的计算状态 =====
     for (auto it = m_cells.begin(); it != m_cells.end(); ++it) {
         CellData* cell = it.value();
         if (cell && cell->hasFormula) {
-            cell->formulaCalculated = false;  // ← 重置为未计算
-            cell->value = cell->formula;       // ← 显示公式文本
+            cell->formulaCalculated = false;
+            cell->value = cell->formula;
         }
     }
 
-    // ===== 【修改】清空快照，下次刷新会被视为首次刷新 =====
     m_lastSnapshot.bindingKeys.clear();
     m_lastSnapshot.formulaCells.clear();
     m_lastSnapshot.dataMarkerCells.clear();
-    m_isFirstRefresh = true;  // ← 重置首次刷新标记
+    m_isFirstRefresh = true;
+
+    m_dirtyFormulas.clear();  // 新增：清空脏标记
 
     setEditMode(true);
     qDebug() << "已还原所有公式为未计算状态";
@@ -599,6 +651,8 @@ bool ReportDataModel::setData(const QModelIndex& index, const QVariant& value, i
         cell->value = text;  // 显示公式文本
         cell->formulaCalculated = false;  // 标记为未计算
         // 不立即调用 calculateFormula
+
+        m_dirtyFormulas.insert(QPoint(index.row(), index.column()));
     }
     else {
         // 普通文本或其他标记
@@ -617,6 +671,10 @@ bool ReportDataModel::setData(const QModelIndex& index, const QVariant& value, i
         else if (text.startsWith("#Date", Qt::CaseInsensitive)) {
             cell->cellType = CellData::DateMarker;
             cell->originalMarker = text;
+        }
+
+        if (!cell->hasFormula) {
+            markDependentFormulasDirty(index.row(), index.column());
         }
     }
 
@@ -1179,4 +1237,80 @@ QList<QString> ReportDataModel::getNewBindings() const
     return newBindings;
 }
 
+void ReportDataModel::optimizeMemory()
+{
+    QList<QPoint> emptyKeys;
+
+    // 默认样式参考
+    RTCellStyle defaultStyle;
+
+    for (auto it = m_cells.constBegin(); it != m_cells.constEnd(); ++it) {
+        const CellData* cell = it.value();
+
+        if (!cell) {
+            emptyKeys.append(it.key());
+            continue;
+        }
+
+        // 清理条件：
+        // 1. 无内容
+        // 2. 无公式
+        // 3. 无数据绑定
+        // 4. 非合并单元格
+        // 5. 使用默认样式
+        bool isEmpty = cell->value.isNull() || cell->value.toString().isEmpty();
+        bool isDefaultStyle =
+            cell->style.backgroundColor == defaultStyle.backgroundColor &&
+            cell->style.textColor == defaultStyle.textColor &&
+            cell->style.alignment == defaultStyle.alignment &&
+            cell->style.font == defaultStyle.font;
+
+        if (isEmpty &&
+            !cell->hasFormula &&
+            !cell->isDataBinding &&
+            cell->cellType == CellData::NormalCell &&
+            !cell->mergedRange.isMerged() &&
+            isDefaultStyle) {
+            emptyKeys.append(it.key());
+        }
+    }
+
+    // 删除空单元格
+    for (const QPoint& key : emptyKeys) {
+        delete m_cells.take(key);
+    }
+
+    if (!emptyKeys.isEmpty()) {
+        qDebug() << QString("内存优化：清理 %1 个空单元格").arg(emptyKeys.size());
+    }
+}
+
+void ReportDataModel::markFormulaDirty(int row, int col)
+{
+    const CellData* cell = getCell(row, col);
+    if (cell && cell->hasFormula) {
+        m_dirtyFormulas.insert(QPoint(row, col));
+        qDebug() << QString("标记公式为脏: (%1, %2)").arg(row).arg(col);
+    }
+}
+
+void ReportDataModel::markDependentFormulasDirty(int changedRow, int changedCol)
+{
+    QString changedAddr = cellAddress(changedRow, changedCol);
+
+    // 遍历所有公式单元格
+    for (auto it = m_cells.constBegin(); it != m_cells.constEnd(); ++it) {
+        const CellData* cell = it.value();
+        if (!cell || !cell->hasFormula) continue;
+
+        // 检查公式是否引用了被修改的单元格
+        if (cell->formula.contains(changedAddr, Qt::CaseInsensitive)) {
+            m_dirtyFormulas.insert(it.key());
+        }
+    }
+
+    if (!m_dirtyFormulas.isEmpty()) {
+        qDebug() << QString("标记 %1 个依赖公式为脏").arg(m_dirtyFormulas.size());
+    }
+}
 

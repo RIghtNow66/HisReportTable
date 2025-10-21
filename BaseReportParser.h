@@ -82,6 +82,9 @@ public:
     // ===== 测试接口 =====
     virtual void runCorrectnessTest();                   // 验证数据对应关系
 
+    bool isCacheValid() const;                         // 新增
+    void invalidateCache();                            // 新增
+
 signals:
     void parseProgress(int current, int total);
     void queryProgress(int current, int total);
@@ -205,6 +208,7 @@ protected:
 
     // 缓存
     QHash<CacheKey, float> m_dataCache;  // 数据缓存
+    QHash<QString, QList<QPair<int64_t, float>>> m_rtuidIndexCache;
     QMutex m_cacheMutex;               // 缓存互斥锁
 
     // 预查询
@@ -215,6 +219,10 @@ protected:
 
     int m_lastPrefetchSuccessCount;
     int m_lastPrefetchTotalCount;
+
+private:
+    QDateTime m_cacheTimestamp;                        // 新增
+    static const int CACHE_EXPIRE_HOURS = 24;          // 新增
 };
 
 // Hash 函数（用于 QHash）

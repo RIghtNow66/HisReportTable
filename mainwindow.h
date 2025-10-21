@@ -16,6 +16,8 @@
 #include <QGroupBox>
 #include <QRadioButton>
 #include <QSpinBox>
+            
+
 
 #include "DataBindingConfig.h" 
 #include "EnhancedTableView.h"
@@ -43,8 +45,8 @@ private slots:
 
     void onCurrentCellChanged(const QModelIndex& current, const QModelIndex& previous);
     void onFormulaEditFinished();
-    void onFormulaTextChanged(); // 新增：监听公式编辑变化
-    void onCellClicked(const QModelIndex& index); // 新增：处理单元格点击
+    void onFormulaTextChanged(); // 监听公式编辑变化
+    void onCellClicked(const QModelIndex& index); // 处理单元格点击
     void onCellChanged(int row, int col);
 
     void onInsertRow();
@@ -83,7 +85,7 @@ private:
     QLineEdit* m_findLineEdit;
 
     // 右键菜单
-    QMenu* m_contextMenu;
+    QMenu* m_contextMenu;  
 
     // 状态
     QModelIndex m_currentIndex;

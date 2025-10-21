@@ -21,7 +21,8 @@ BaseReportParser::BaseReportParser(ReportDataModel* model, QObject* parent)
     , m_isPrefetching(false)
     , m_stopRequested(0)
     , m_lastPrefetchSuccessCount(0)  
-    , m_lastPrefetchTotalCount(0)  
+    , m_lastPrefetchTotalCount(0)
+    , m_cacheTimestamp()
 {
     // 创建 FutureWatcher
     m_prefetchWatcher = new QFutureWatcher<bool>(this);
@@ -44,16 +45,8 @@ BaseReportParser::~BaseReportParser()
         if (!m_prefetchFuture.isFinished()) {
             qDebug() << "等待后台线程退出（最多3秒）...";
 
-            // 使用 QDeadlineTimer 实现超时
-            QDeadlineTimer deadline(3000);
-            while (!m_prefetchFuture.isFinished() && !deadline.hasExpired()) {
-                QThread::msleep(50);  // 每50ms检查一次
-                QCoreApplication::processEvents();  // 处理信号
-            }
-
-            if (!m_prefetchFuture.isFinished()) {
-                qWarning() << "后台线程未能及时退出，强制析构";
-            }
+            // 修改：使用 waitForFinished 替代事件循环
+            m_prefetchFuture.waitForFinished();
         }
     }
     delete m_fetcher;
@@ -95,6 +88,8 @@ void BaseReportParser::clearCache()
     QMutexLocker locker(&m_cacheMutex);
     qDebug() << "清空缓存：" << m_dataCache.size() << "个数据点";
     m_dataCache.clear();
+    m_rtuidIndexCache.clear();  // 新增
+    m_cacheTimestamp = QDateTime();
 }
 
 bool BaseReportParser::findInCache(const QString& rtuId, int64_t timestamp, float& value)
@@ -111,42 +106,25 @@ bool BaseReportParser::findInCache(const QString& rtuId, int64_t timestamp, floa
         return true;
     }
 
-    // 调试：打印缓存中该RTU的所有时间戳（限制输出）
-    static int debugCount = 0;
-    if (debugCount < 3) {  // 只输出前3次
-        qDebug() << QString("  缓存查找失败（精确匹配）: RTU=%1, 查询时间戳=%2")
-            .arg(rtuId).arg(timestamp);
+    // 2. 容错匹配：使用索引加速
+    const int64_t tolerance = 300000;
 
-        int foundCount = 0;
-        qDebug() << QString("  该RTU在缓存中的时间戳：");
-        for (auto it = m_dataCache.constBegin(); it != m_dataCache.constEnd(); ++it) {
-            if (it.key().rtuId == rtuId && foundCount < 3) {
-                qDebug() << QString("    - %1 (差值: %2秒)")
-                    .arg(it.key().timestamp)
-                    .arg((timestamp - it.key().timestamp) / 1000);
-                foundCount++;
-            }
-        }
-        debugCount++;
+    if (!m_rtuidIndexCache.contains(rtuId)) {
+        return false;
     }
 
-    // 2. 容错匹配：±60秒内的最近时间点
-    const int64_t tolerance = 300000;  // 60秒（毫秒）
+    const QList<QPair<int64_t, float>>& timeValues = m_rtuidIndexCache[rtuId];
 
     int64_t closestDiff = std::numeric_limits<int64_t>::max();
     bool found = false;
     float closestValue = 0.0f;
 
-    for (auto it = m_dataCache.constBegin(); it != m_dataCache.constEnd(); ++it) {
-        if (it.key().rtuId == rtuId) {
-            int64_t diff = qAbs(it.key().timestamp - timestamp);
-            if (diff <= tolerance) {
-                if (diff < closestDiff) {
-                    closestDiff = diff;
-                    closestValue = it.value();
-                    found = true;
-                }
-            }
+    for (const auto& pair : timeValues) {
+        int64_t diff = qAbs(pair.first - timestamp);
+        if (diff <= tolerance && diff < closestDiff) {
+            closestDiff = diff;
+            closestValue = pair.second;
+            found = true;
         }
     }
 
@@ -213,6 +191,7 @@ bool BaseReportParser::executeSingleQuery(const QString& rtuList,
 
         // 【优化】在锁外准备数据
         QHash<CacheKey, float> tempCache;
+        QHash<QString, QList<QPair<int64_t, float>>> tempIndexCache;
         QStringList rtuArray = rtuList.split(",");
 
         for (auto it = dataMap.begin(); it != dataMap.end(); ++it) {
@@ -224,6 +203,8 @@ bool BaseReportParser::executeSingleQuery(const QString& rtuList,
                 key.rtuId = rtuArray[i];
                 key.timestamp = timestamp;
                 tempCache[key] = values[i];
+
+                tempIndexCache[rtuArray[i]].append(qMakePair(timestamp, values[i]));
             }
         }
 
@@ -231,6 +212,12 @@ bool BaseReportParser::executeSingleQuery(const QString& rtuList,
         {
             QMutexLocker locker(&m_cacheMutex);
             m_dataCache.unite(tempCache);
+
+            for (auto it = tempIndexCache.constBegin(); it != tempIndexCache.constEnd(); ++it) {
+                m_rtuidIndexCache[it.key()].append(it.value());
+            }
+
+            m_cacheTimestamp = QDateTime::currentDateTime();
         }
 
         return true;
@@ -479,4 +466,32 @@ QString BaseReportParser::extractRtuId(const QString& text)
 void BaseReportParser::runCorrectnessTest()
 {
     qDebug() << "基类测试函数 - 子类应该重写此方法";
+}
+
+bool BaseReportParser::isCacheValid() const
+{
+    if (m_dataCache.isEmpty()) {
+        return false;
+    }
+
+    if (!m_cacheTimestamp.isValid()) {
+        return false;
+    }
+
+    QDateTime now = QDateTime::currentDateTime();
+    qint64 hours = m_cacheTimestamp.secsTo(now) / 3600;
+
+    bool valid = hours < CACHE_EXPIRE_HOURS;
+
+    if (!valid) {
+        qDebug() << QString("缓存已过期: %1 小时前创建").arg(hours);
+    }
+
+    return valid;
+}
+
+void BaseReportParser::invalidateCache()
+{
+    qDebug() << "使缓存失效";
+    clearCache();
 }

@@ -1157,5 +1157,3 @@ void MainWindow::updateUIForEditMode(bool editMode)
         m_formulaEdit->setStyleSheet("QLineEdit { border: 1px solid gray; padding: 2px; background-color: #f0f0f0; }");
     }
 }
-
-

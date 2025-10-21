@@ -12,7 +12,7 @@ CONFIG -= debug release
 CONFIG += debug_and_release
 
 # Qt 模块
-QT += core widgets gui core-private gui-private svg concurrent
+QT += core widgets gui core-private gui-private svg concurrent printsupport
 
 # ============ 路径设置 ============
 INCLUDEPATH += $${APP_INC}

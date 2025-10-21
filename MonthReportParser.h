@@ -1,6 +1,4 @@
 #pragma once
-
-#pragma once
 #ifndef MONTHREPORTPARSER_H
 #define MONTHREPORTPARSER_H
 

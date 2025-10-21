@@ -115,6 +115,10 @@ public:
     void setEditMode(bool editMode);
     bool isEditMode() const { return m_editMode; }
 
+    void optimizeMemory();                                   
+    void markFormulaDirty(int row, int col);                 
+    void markDependentFormulasDirty(int changedRow, int changedCol);  
+
 
 signals:
     void cellChanged(int row, int col);
@@ -132,6 +136,8 @@ private:
     // ===== 公式依赖检查 =====
     bool checkFormulaDependenciesReady(int row, int col);
     QPoint parseCellReference(const QString& cellRef) const;
+
+    bool detectCircularDependency(int row, int col, QSet<QPoint>& visitedCells);
 
 private:
     QHash<QPoint, CellData*> m_cells;        // 改为CellData*
@@ -160,6 +166,9 @@ private:
     bool m_isFirstRefresh = true;      // 是否首次刷新
 
     bool m_editMode = true;  // 默认为编辑模式
+
+    // 需要重新计算的公式单元格
+    QSet<QPoint> m_dirtyFormulas;
 
 };
 
