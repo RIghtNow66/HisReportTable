@@ -1,87 +1,73 @@
 #include "UnifiedQueryParser.h"
 #include "reportdatamodel.h"
 #include "TaosDataFetcher.h"
-#include "xlsxdocument.h"
-#include "xlsxworksheet.h"
 #include <QMessageBox>
-#include <QFileInfo>
 #include <QProgressDialog>
 #include <cmath>
 
 UnifiedQueryParser::UnifiedQueryParser(ReportDataModel* model, QObject* parent)
     : BaseReportParser(model, parent)
-    , m_intervalSeconds(3600)
 {
 }
 
-void UnifiedQueryParser::setTimeRange(const QDateTime& start, const QDateTime& end, int interval)
+void UnifiedQueryParser::setTimeRange(const TimeRangeConfig& config)
 {
-    m_startTime = start;
-    m_endTime = end;
-    m_intervalSeconds = interval;
-
+    m_timeConfig = config;
     qDebug() << QString("设置时间范围：%1 ~ %2, 间隔%3秒")
-        .arg(start.toString()).arg(end.toString()).arg(interval);
+        .arg(config.startTime.toString())
+        .arg(config.endTime.toString())
+        .arg(config.intervalSeconds);
 }
 
 bool UnifiedQueryParser::scanAndParse()
 {
     qDebug() << "========== 开始解析统一查询配置 ==========";
 
-    // 从模型获取配置文件路径（在 loadReportTemplate 中设置）
-    // 这里需要 model 提供一个接口返回文件路径
-    // 暂时先假设通过构造时传入
-
-    return true;  // 配置加载在 loadConfigFile 中完成
+    // 从 Model 的 cells 中读取配置（2列：名称+RTU号）
+    return loadConfigFromCells();
 }
 
-bool UnifiedQueryParser::loadConfigFile(const QString& filePath)
+bool UnifiedQueryParser::loadConfigFromCells()
 {
-    qDebug() << "加载配置文件：" << filePath;
-
-    // 1. 打开Excel
-    QXlsx::Document xlsx(filePath);
-    if (!xlsx.load()) {
-        QMessageBox::warning(nullptr, "错误", "无法打开配置文件");
-        return false;
-    }
-
-    QXlsx::Worksheet* sheet = static_cast<QXlsx::Worksheet*>(xlsx.currentSheet());
-    if (!sheet) {
-        return false;
-    }
-
-    // 2. 提取报表名称
-    QFileInfo fileInfo(filePath);
-    QString baseName = fileInfo.baseName();
-    m_config.reportName = baseName.startsWith("#REPO_") ? baseName.mid(6) : baseName;
-    m_config.configFilePath = filePath;
-
-    // 3. 读取配置
+    // 清空旧配置
     m_config.columns.clear();
-    QXlsx::CellRange range = sheet->dimension();
 
-    for (int row = range.firstRow(); row <= range.lastRow(); ++row) {
-        auto cellA = sheet->cellAt(row, 1);
-        auto cellB = sheet->cellAt(row, 2);
+    // 遍历 Model 的前2列，读取配置
+    int totalRows = m_model->rowCount();
 
-        if (!cellA || !cellB) continue;
+    for (int row = 0; row < totalRows; ++row) {
+        QModelIndex nameIndex = m_model->index(row, 0);
+        QModelIndex rtuIndex = m_model->index(row, 1);
 
-        QString columnName = cellA->value().toString().trimmed();
-        QString rtuId = cellB->value().toString().trimmed();
+        QString displayName = m_model->data(nameIndex, Qt::DisplayRole).toString().trimmed();
+        QString rtuId = m_model->data(rtuIndex, Qt::DisplayRole).toString().trimmed();
 
-        if (columnName.isEmpty() || rtuId.isEmpty()) continue;
+        // 跳过空行
+        if (displayName.isEmpty() && rtuId.isEmpty()) {
+            continue;
+        }
+
+        // 验证完整性
+        if (displayName.isEmpty() || rtuId.isEmpty()) {
+            qWarning() << QString("第%1行配置不完整").arg(row + 1);
+            continue;
+        }
 
         ReportColumnConfig colConfig;
-        colConfig.displayName = columnName;
+        colConfig.displayName = displayName;
         colConfig.rtuId = rtuId;
-        colConfig.sourceRow = row - 1;
+        colConfig.sourceRow = row;
 
         m_config.columns.append(colConfig);
     }
 
+    if (m_config.columns.isEmpty()) {
+        qWarning() << "未找到有效的列配置";
+        return false;
+    }
+
     qDebug() << QString("配置加载完成：%1 个数据列").arg(m_config.columns.size());
-    return !m_config.columns.isEmpty();
+    return true;
 }
 
 bool UnifiedQueryParser::executeQueries(QProgressDialog* progress)
@@ -91,7 +77,7 @@ bool UnifiedQueryParser::executeQueries(QProgressDialog* progress)
         return false;
     }
 
-    if (!m_startTime.isValid() || !m_endTime.isValid()) {
+    if (!m_timeConfig.isValid()) {
         QMessageBox::warning(nullptr, "错误", "时间范围未设置");
         return false;
     }
@@ -139,6 +125,7 @@ bool UnifiedQueryParser::executeQueries(QProgressDialog* progress)
 
 void UnifiedQueryParser::restoreToTemplate()
 {
+    // 清空时间轴和数据（保留配置）
     m_timeAxis.clear();
     m_alignedData.clear();
     qDebug() << "统一查询数据已清空";
@@ -146,53 +133,80 @@ void UnifiedQueryParser::restoreToTemplate()
 
 QString UnifiedQueryParser::buildQueryAddress()
 {
+    // 收集所有 RTU 号
     QStringList rtuList;
     for (const auto& col : m_config.columns) {
         rtuList.append(col.rtuId);
     }
 
     QString rtuPart = rtuList.join(",");
-    QString startStr = m_startTime.toString("yyyy-MM-dd HH:mm:ss");
-    QString endStr = m_endTime.toString("yyyy-MM-dd HH:mm:ss");
+    QString startStr = m_timeConfig.startTime.toString("yyyy-MM-dd HH:mm:ss");
+    QString endStr = m_timeConfig.endTime.toString("yyyy-MM-dd HH:mm:ss");
 
+    // 格式：RTU1,RTU2@起始时间~结束时间#间隔秒数
     return QString("%1@%2~%3#%4")
         .arg(rtuPart)
         .arg(startStr)
         .arg(endStr)
-        .arg(m_intervalSeconds);
+        .arg(m_timeConfig.intervalSeconds);
 }
 
 QVector<QDateTime> UnifiedQueryParser::generateTimeAxis()
 {
+    // 【直接复用版本1的 ReportDataModel::generateTimeAxis】
     QVector<QDateTime> result;
-    QDateTime current = m_startTime;
 
-    while (current <= m_endTime) {
-        result.append(current);
-        current = current.addSecs(m_intervalSeconds);
+    if (!m_timeConfig.isValid()) {
+        qWarning() << "时间配置无效";
+        return result;
     }
 
-    qDebug() << QString("生成时间轴：%1 个点").arg(result.size());
+    // 单点查询（间隔为0）
+    if (m_timeConfig.intervalSeconds == 0) {
+        result.append(m_timeConfig.startTime);
+        qDebug() << "生成单点查询时间：" << m_timeConfig.startTime.toString("yyyy-MM-dd HH:mm:ss");
+        return result;
+    }
+
+    // 时间范围查询
+    QDateTime current = m_timeConfig.startTime;
+    qint64 totalSeconds = m_timeConfig.startTime.secsTo(m_timeConfig.endTime);
+    int estimatedSize = totalSeconds / m_timeConfig.intervalSeconds + 1;
+    result.reserve(estimatedSize);
+
+    while (current <= m_timeConfig.endTime) {
+        result.append(current);
+        current = current.addSecs(m_timeConfig.intervalSeconds);
+    }
+
+    qDebug() << "生成时间轴：" << result.size() << "个时间点";
     return result;
 }
 
 QHash<QString, QVector<double>> UnifiedQueryParser::alignData(
     const std::map<int64_t, std::vector<float>>& rawData)
 {
+    // 【直接复用版本1的 ReportDataModel::alignDataWithInterpolation】
+    // 注意：这里简化了参数，因为 RTU 顺序已经在 m_config.columns 中确定
+
     QHash<QString, QVector<double>> result;
     QStringList rtuList;
 
+    // 初始化结果容器
     for (const auto& col : m_config.columns) {
         rtuList.append(col.rtuId);
-        result[col.rtuId] = QVector<double>(m_timeAxis.size(), NAN);
+        result[col.rtuId] = QVector<double>(m_timeAxis.size(), std::numeric_limits<double>::quiet_NaN());
     }
 
-    int64_t tolerance = (int64_t)(m_intervalSeconds * 1000) / 2;
+    // 容错匹配的时间窗口（间隔的一半）
+    int64_t tolerance = (int64_t)(m_timeConfig.intervalSeconds * 1000) / 2;
     int matchCount = 0;
 
+    // 对齐数据
     for (int i = 0; i < m_timeAxis.size(); ++i) {
         int64_t targetTime = m_timeAxis[i].toMSecsSinceEpoch();
 
+        // 查找最接近的时间戳
         int64_t closestTime = -1;
         int64_t minDiff = LLONG_MAX;
 
@@ -204,6 +218,7 @@ QHash<QString, QVector<double>> UnifiedQueryParser::alignData(
             }
         }
 
+        // 如果在容错范围内，使用该数据
         if (closestTime != -1 && minDiff <= tolerance) {
             const std::vector<float>& values = rawData.at(closestTime);
 

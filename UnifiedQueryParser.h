@@ -19,26 +19,25 @@ public:
     void restoreToTemplate() override;
 
     // ===== 统一查询特有接口 =====
+    void setTimeRange(const TimeRangeConfig& config);
     const HistoryReportConfig& getConfig() const { return m_config; }
     const QVector<QDateTime>& getTimeAxis() const { return m_timeAxis; }
     const QHash<QString, QVector<double>>& getAlignedData() const { return m_alignedData; }
 
-    // 设置时间范围（从外部传入）
-    void setTimeRange(const QDateTime& start, const QDateTime& end, int interval);
+    int getQueryIntervalSeconds() const override { return m_timeConfig.intervalSeconds; }
 
 protected:
-    // ===== 实现纯虚函数（但统一查询不需要这些）=====
-    bool findDateMarker() override { return true; }  // 不需要
-    void parseRow(int row) override { Q_UNUSED(row); }  // 不需要
+    // ===== 实现纯虚函数（统一查询不需要这些）=====
+    bool findDateMarker() override { return true; }
+    void parseRow(int row) override { Q_UNUSED(row); }
     QTime getTaskTime(const QueryTask& task) override { Q_UNUSED(task); return QTime(); }
     QDateTime constructDateTime(const QString& date, const QString& time) override {
         Q_UNUSED(date); Q_UNUSED(time); return QDateTime();
     }
-    int getQueryIntervalSeconds() const override { return m_intervalSeconds; }
 
 private:
     // ===== 私有辅助函数 =====
-    bool loadConfigFile(const QString& filePath);
+    bool loadConfigFromCells();
     QString buildQueryAddress();
     QVector<QDateTime> generateTimeAxis();
     QHash<QString, QVector<double>> alignData(
@@ -46,13 +45,9 @@ private:
 
 private:
     HistoryReportConfig m_config;           // 配置信息
+    TimeRangeConfig m_timeConfig;           // 时间配置
     QVector<QDateTime> m_timeAxis;          // 时间轴
     QHash<QString, QVector<double>> m_alignedData;  // 对齐后的数据
-
-    // 时间范围（从外部传入）
-    QDateTime m_startTime;
-    QDateTime m_endTime;
-    int m_intervalSeconds;
 };
 
 #endif // UNIFIEDQUERYPARSER_H

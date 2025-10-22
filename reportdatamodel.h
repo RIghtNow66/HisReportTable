@@ -4,23 +4,23 @@
 #include "DataBindingConfig.h"
 #include <QHash>
 #include <QAbstractTableModel>
-#include <QFontInfo>      // 添加这个
-#include <QFontDatabase>  // 如果需要的话
-#include <QBrush>         // 添加这个
+#include <QFontInfo>
+#include <QFontDatabase>
+#include <QBrush>
 #include <QPoint>
 #include <QSize>
 #include <QVector> 
 #include <QProgressDialog>
 
-// qHash 函数必须在 QHash 使用之前定义
 inline uint qHash(const QPoint& key, uint seed = 0) noexcept
 {
-    return qHash(qMakePair(key.x(), key.y()), seed);  // 改用 qMakePair
+    return qHash(qMakePair(key.x(), key.y()), seed);
 }
 
 class BaseReportParser;
 class MonthReportParser;
 class DayReportParser;
+class UnifiedQueryParser;  // 新增前向声明
 class FormulaEngine;
 class QProgressDialog;
 
@@ -34,11 +34,10 @@ class ReportDataModel : public QAbstractTableModel
 public:
     // ===== 报表模式枚举 =====
     enum ReportMode {
-        TEMPLATE_MODE,        // 模板驱动模式（原版本2）
-        UNIFIED_QUERY_MODE    // 统一查询模式（原版本1）
+        TEMPLATE_MODE,
+        UNIFIED_QUERY_MODE
     };
 
-    // ===== 模板类型枚举（仅在 TEMPLATE_MODE 下有效）=====
     enum TemplateType {
         NORMAL_EXCEL,
         DAY_REPORT,
@@ -46,10 +45,10 @@ public:
     };
 
     enum ChangeType {
-        NO_CHANGE,           // 无变化
-        FORMULA_ONLY,        // 只有公式变化
-        BINDING_ONLY,        // 只有绑定变化
-        MIXED_CHANGE         // 混合变化
+        NO_CHANGE,
+        FORMULA_ONLY,
+        BINDING_ONLY,
+        MIXED_CHANGE
     };
 
     enum ExportMode {
@@ -62,31 +61,27 @@ public:
     bool isUnifiedQueryMode() const { return m_currentMode == UNIFIED_QUERY_MODE; }
 
     // ===== 统一查询模式接口 =====
-    bool loadUnifiedQueryConfig(const QString& filePath);
-    bool refreshUnifiedQuery(QProgressDialog* progress);
-    bool exportConfigFile(const QString& fileName);
-    bool hasHistoryData() const { return !m_timeAxis.isEmpty(); }
+    bool hasUnifiedQueryData() const;  // 新增：判断是否已查询数据
+    void setTimeRangeForQuery(const TimeRangeConfig& config);  // 新增：设置时间范围
+    bool exportConfigFile(const QString& fileName);  // 保留：导出配置
 
-    ChangeType detectChanges();  // 检测变化类型
-    void saveRefreshSnapshot();  // 保存刷新快照
+    ChangeType detectChanges();
+    void saveRefreshSnapshot();
     bool isFirstRefresh() const { return m_isFirstRefresh; }
-
 
     explicit ReportDataModel(QObject* parent = nullptr);
     ~ReportDataModel();
 
-    bool loadReportTemplate(const QString& fileName); // 替代 loadFromExcel 和 loadDayReport
-    bool refreshReportData(QProgressDialog* progress); // 修改签名
-    void restoreToTemplate(); // 新增函数
+    bool loadReportTemplate(const QString& fileName);
+    bool refreshReportData(QProgressDialog* progress);
+    void restoreToTemplate();
 
     TemplateType getReportType() const;
     BaseReportParser* getParser() const;
     void notifyDataChanged();
 
-    //  添加模式管理接口
     QString getReportName() const { return m_reportName; }
-    bool hasDataBindings() const;  //  检查是否有##绑定
-
+    bool hasDataBindings() const;
 
     // Qt Model 接口
     int rowCount(const QModelIndex& parent = QModelIndex()) const override;
@@ -108,13 +103,13 @@ public:
 
     // 单元格访问
     void clearAllCells();
-    void addCellDirect(int row, int col, CellData* cell);  // 改为CellData*
+    void addCellDirect(int row, int col, CellData* cell);
     void updateModelSize(int newRowCount, int newColCount);
-    const QHash<QPoint, CellData*>& getAllCells() const;   // 改为CellData*
+    const QHash<QPoint, CellData*>& getAllCells() const;
     void recalculateAllFormulas();
-    const CellData* getCell(int row, int col) const;       // 改为CellData*
-    CellData* getCell(int row, int col);                   // 改为CellData*
-    CellData* ensureCell(int row, int col);                // 改为CellData*
+    const CellData* getCell(int row, int col) const;
+    CellData* getCell(int row, int col);
+    CellData* ensureCell(int row, int col);
     void calculateFormula(int row, int col);
     QString cellAddress(int row, int col) const;
 
@@ -128,97 +123,73 @@ public:
     void clearSizes();
 
     QFont ensureFontAvailable(const QFont& requestedFont) const;
-
     bool hasExecutedQueries() const;
 
     // 模式管理接口
     void setEditMode(bool editMode);
     bool isEditMode() const { return m_editMode; }
 
-    void optimizeMemory();                                   
-    void markFormulaDirty(int row, int col);                 
-    void markDependentFormulasDirty(int changedRow, int changedCol);  
-
+    void optimizeMemory();
+    void markFormulaDirty(int row, int col);
+    void markDependentFormulasDirty(int changedRow, int changedCol);
 
 signals:
     void cellChanged(int row, int col);
-
-    // 模式变化信号 
     void editModeChanged(bool editMode);
 
 private:
     // ===== 模式分发函数 =====
     QVariant getTemplateCellData(const QModelIndex& index, int role) const;
-    QVariant getUnifiedQueryCellData(const QModelIndex& index, int role) const;
+    QVariant getUnifiedQueryCellData(const QModelIndex& index, int role) const;  // 修改：实现
 
-    bool refreshTemplateReport(QProgressDialog* progress);  // 将原有逻辑封装到这里
+    bool refreshTemplateReport(QProgressDialog* progress);
 
-    // ===== 统一查询模式辅助函数 =====
-    QString buildQueryAddress(const QString& rtuId, const TimeRangeConfig& config);
-    QStringList extractRtuListFromConfig() const;
-    void generateHistoryReport(const HistoryReportConfig& config,
-        const QHash<QString, QVector<double>>& alignedData,
-        const QVector<QDateTime>& timeAxis);
-
-    // ===== 静态工具函数 =====
-    static QVector<QDateTime> generateTimeAxis(const TimeRangeConfig& config);
-    static QHash<QString, QVector<double>> alignDataWithInterpolation(
-        const QHash<QString, std::map<int64_t, std::vector<float>>>& rawData,
-        const QVector<QDateTime>& timeAxis);
+    // ===== 统一查询辅助函数 =====
+    bool loadUnifiedQueryConfig(const QString& filePath);  // 修改：实现
+    bool refreshUnifiedQuery(QProgressDialog* progress);   // 修改：实现
 
     bool loadFromExcelFile(const QString& fileName);
 
-    QSet<QString> getCurrentBindings() const;     // 获取当前所有绑定标记
-    QSet<QPoint> getCurrentFormulas() const;      // 获取当前所有公式位置
-    QList<QString> getNewBindings() const;        // 获取新增的绑定标记
+    QSet<QString> getCurrentBindings() const;
+    QSet<QPoint> getCurrentFormulas() const;
+    QList<QString> getNewBindings() const;
 
     // ===== 公式依赖检查 =====
     bool checkFormulaDependenciesReady(int row, int col);
     QPoint parseCellReference(const QString& cellRef) const;
-
     bool detectCircularDependency(int row, int col, QSet<QPoint>& visitedCells);
 
 private:
-    QHash<QPoint, CellData*> m_cells;        // 改为CellData*
+    QHash<QPoint, CellData*> m_cells;
     int m_maxRow;
     int m_maxCol;
     FormulaEngine* m_formulaEngine;
     QVector<double> m_rowHeights;
     QVector<double> m_columnWidths;
 
-    GlobalDataConfig m_globalConfig;         // 全局配置
-
-    QString m_reportName;                                     // 报表名称
+    GlobalDataConfig m_globalConfig;
+    QString m_reportName;
 
     TemplateType m_reportType;
     BaseReportParser* m_parser;
 
     struct RefreshSnapshot {
-        QSet<QString> bindingKeys;     // 上次刷新时的绑定标记集合
-        QSet<QPoint> formulaCells;     // 上次刷新时的公式单元格位置
+        QSet<QString> bindingKeys;
+        QSet<QPoint> formulaCells;
         QSet<QPoint> dataMarkerCells;
-        bool isEmpty() const { return bindingKeys.isEmpty() && formulaCells.isEmpty(); dataMarkerCells.isEmpty();
+        bool isEmpty() const {
+            return bindingKeys.isEmpty() && formulaCells.isEmpty() && dataMarkerCells.isEmpty();
         }
     };
 
-    RefreshSnapshot m_lastSnapshot;    // 上次刷新的快照
-    bool m_isFirstRefresh = true;      // 是否首次刷新
-
-    bool m_editMode = true;  // 默认为编辑模式
-
-    // 需要重新计算的公式单元格
+    RefreshSnapshot m_lastSnapshot;
+    bool m_isFirstRefresh = true;
+    bool m_editMode = true;
     QSet<QPoint> m_dirtyFormulas;
 
     // ===== 模式管理变量 =====
     ReportMode m_currentMode;
-    TemplateType m_templateType;  // 仅在 TEMPLATE_MODE 下有效
-
-    // ===== 统一查询模式变量 =====
-    HistoryReportConfig m_queryConfig;           // 报表配置
-    QVector<QDateTime> m_timeAxis;               // 完整时间轴
-    QHash<QString, QVector<double>> m_alignedData;  // 对齐后的数据
-    bool m_configModified;                       // 配置是否被修改（用于保存提示）
-
+    TemplateType m_templateType;
 };
 
 #endif // REPORTDATAMODEL_H

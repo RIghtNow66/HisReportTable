@@ -1,4 +1,4 @@
-﻿#include <QColor>
+#include <QColor>
 #include <QFont>
 #include <QPoint>
 #include <QHash>
@@ -20,6 +20,7 @@
 #include "BaseReportParser.h"
 #include "MonthReportParser.h"
 #include "DayReportParser.h"
+#include "UnifiedQueryParser.h"
 
 // QXlsx相关（检查是否已包含）
 #include "xlsxdocument.h"      // 用于 QXlsx::Document
@@ -38,7 +39,6 @@ ReportDataModel::ReportDataModel(QObject* parent)
     , m_editMode(true)
     , m_currentMode(TEMPLATE_MODE)      // 默认模板模式
     , m_templateType(TemplateType::DAY_REPORT)        // 默认日报
-    , m_configModified(false)           // 配置未修改
 {
 }
 
@@ -55,15 +55,6 @@ bool ReportDataModel::loadReportTemplate(const QString& fileName)
     // 1. 清理旧状态，并将刷新标记重置为 false
     clearAllCells();
 
-    // 清理统一查询模式数据
-    m_timeAxis.clear();
-    m_alignedData.clear();
-    m_queryConfig.columns.clear();
-    m_queryConfig.reportName.clear();
-    m_queryConfig.configFilePath.clear();
-    m_queryConfig.dataColumns.clear();
-    m_configModified = false;
-
     // 2. 加载基础Excel数据
     if (!loadFromExcelFile(fileName)) {
         return false;
@@ -78,7 +69,7 @@ bool ReportDataModel::loadReportTemplate(const QString& fileName)
     if (baseName.startsWith("#REPO_", Qt::CaseInsensitive)) {
         qDebug() << "检测到统一查询模式文件：" << baseName;
         m_currentMode = UNIFIED_QUERY_MODE;
-        return loadUnifiedQueryConfig(fileName);
+        return loadUnifiedQueryConfig(fileName);  //
     }
 
 
@@ -488,6 +479,23 @@ void ReportDataModel::restoreToTemplate()
         m_parser->restoreToTemplate();
     }
 
+    // ===== 统一查询模式支持 =====
+    if (m_currentMode == UNIFIED_QUERY_MODE && m_parser) {
+        m_parser->restoreToTemplate();
+
+        // 恢复为配置视图（2列）
+        UnifiedQueryParser* queryParser = dynamic_cast<UnifiedQueryParser*>(m_parser);
+        if (queryParser) {
+            const HistoryReportConfig& config = queryParser->getConfig();
+            beginResetModel();
+            updateModelSize(config.columns.size(), 2);
+            endResetModel();
+
+            qDebug() << "统一查询已还原到配置阶段";
+            return;
+        }
+    }
+
     for (auto it = m_cells.begin(); it != m_cells.end(); ++it) {
         CellData* cell = it.value();
         if (cell && cell->hasFormula) {
@@ -654,75 +662,6 @@ QVariant ReportDataModel::data(const QModelIndex& index, int role) const
     return QVariant();
 }
 
-bool ReportDataModel::loadUnifiedQueryConfig(const QString& filePath)
-{
-    Q_UNUSED(filePath)
-        qDebug() << "[占位符] loadUnifiedQueryConfig() 被调用，功能开发中...";
-
-    QMessageBox::information(nullptr, "提示",
-        "统一查询模式功能开发中...\n当前文件：" + filePath);
-
-    return false;  // 暂时返回false
-}
-
-bool ReportDataModel::refreshUnifiedQuery(QProgressDialog* progress)
-{
-    Q_UNUSED(progress)
-        qDebug() << "[占位符] refreshUnifiedQuery() 被调用，功能开发中...";
-    return false;
-}
-
-QVariant ReportDataModel::getUnifiedQueryCellData(const QModelIndex& index, int role) const
-{
-    Q_UNUSED(index)
-        Q_UNUSED(role)
-        return QVariant("开发中");
-}
-
-bool ReportDataModel::exportConfigFile(const QString& fileName)
-{
-    Q_UNUSED(fileName)
-        qDebug() << "[占位符] exportConfigFile() 被调用，功能开发中...";
-    return false;
-}
-
-QString ReportDataModel::buildQueryAddress(const QString& rtuId, const TimeRangeConfig& config)
-{
-    Q_UNUSED(rtuId)
-        Q_UNUSED(config)
-        return QString();
-}
-
-QStringList ReportDataModel::extractRtuListFromConfig() const
-{
-    return QStringList();
-}
-
-void ReportDataModel::generateHistoryReport(
-    const HistoryReportConfig& config,
-    const QHash<QString, QVector<double>>& alignedData,
-    const QVector<QDateTime>& timeAxis)
-{
-    Q_UNUSED(config)
-        Q_UNUSED(alignedData)
-        Q_UNUSED(timeAxis)
-        qDebug() << "[占位符] generateHistoryReport() 被调用，功能开发中...";
-}
-
-QVector<QDateTime> ReportDataModel::generateTimeAxis(const TimeRangeConfig& config)
-{
-    Q_UNUSED(config)
-        return QVector<QDateTime>();
-}
-
-QHash<QString, QVector<double>> ReportDataModel::alignDataWithInterpolation(
-    const QHash<QString, std::map<int64_t, std::vector<float>>>& rawData,
-    const QVector<QDateTime>& timeAxis)
-{
-    Q_UNUSED(rawData)
-        Q_UNUSED(timeAxis)
-        return QHash<QString, QVector<double>>();
-}
 
 bool ReportDataModel::refreshTemplateReport(QProgressDialog* progress)
 {
@@ -990,14 +929,28 @@ Qt::ItemFlags ReportDataModel::flags(const QModelIndex& index) const
 {
     if (!index.isValid()) return Qt::NoItemFlags;
 
+    // ===== 新增：统一查询模式处理 =====
+    if (m_currentMode == UNIFIED_QUERY_MODE) {
+        if (hasUnifiedQueryData()) {
+            // 报表阶段：只读
+            return Qt::ItemIsEnabled | Qt::ItemIsSelectable;
+        }
+        else {
+            // 配置阶段：可编辑
+            return Qt::ItemIsEnabled | Qt::ItemIsSelectable | Qt::ItemIsEditable;
+        }
+    }
+
     // ===== 运行模式下只读 =====
     if (!m_editMode) {
         return Qt::ItemIsEnabled | Qt::ItemIsSelectable;
     }
 
+    // ... 原有的合并单元格判断逻辑 ...
     const CellData* cell = getCell(index.row(), index.column());
     if (cell && cell->mergedRange.isMerged()) {
-        if (index.row() != cell->mergedRange.startRow || index.column() != cell->mergedRange.startCol) {
+        if (index.row() != cell->mergedRange.startRow ||
+            index.column() != cell->mergedRange.startCol) {
             return Qt::ItemIsEnabled;
         }
     }
@@ -1613,6 +1566,179 @@ void ReportDataModel::markDependentFormulasDirty(int changedRow, int changedCol)
 
     if (!m_dirtyFormulas.isEmpty()) {
         qDebug() << QString("标记 %1 个依赖公式为脏").arg(m_dirtyFormulas.size());
+    }
+}
+
+bool ReportDataModel::loadUnifiedQueryConfig(const QString& filePath)
+{
+    // 加载 Excel 到 m_cells，然后调用 Parser
+
+    // 1. 加载 Excel 文件
+    if (!loadFromExcelFile(filePath)) {
+        return false;
+    }
+
+    // 2. 创建统一查询解析器
+    m_parser = new UnifiedQueryParser(this, this);
+
+    // 3. 解析配置（从 m_cells 读取）
+    if (!m_parser->scanAndParse()) {
+        delete m_parser;
+        m_parser = nullptr;
+        clearAllCells();
+        return false;
+    }
+
+    qDebug() << "统一查询配置加载完成";
+    return true;
+}
+
+bool ReportDataModel::refreshUnifiedQuery(QProgressDialog* progress)
+{
+    UnifiedQueryParser* queryParser = dynamic_cast<UnifiedQueryParser*>(m_parser);
+    if (!queryParser) {
+        QMessageBox::warning(nullptr, "错误", "解析器类型错误");
+        return false;
+    }
+
+    // 1. 检查时间配置
+    if (queryParser->getQueryIntervalSeconds() == 0 &&
+        queryParser->getTimeAxis().isEmpty()) {
+        // 弹出时间设置对话框（由 MainWindow 负责）
+        // 这里只检查，不弹窗
+        QMessageBox::information(nullptr, "提示",
+            "请先点击工具栏的 [时间设置] 按钮设置查询时间范围");
+        return false;
+    }
+
+    // 2. 执行查询
+    bool success = queryParser->executeQueries(progress);
+
+    if (!success) {
+        return false;
+    }
+
+    // 3. 更新 Model 尺寸
+    const QVector<QDateTime>& timeAxis = queryParser->getTimeAxis();
+    const HistoryReportConfig& config = queryParser->getConfig();
+
+    int totalRows = timeAxis.size() + 1;  // +1 表头
+    int totalCols = config.columns.size() + 1;  // +1 时间列
+
+    beginResetModel();
+    updateModelSize(totalRows, totalCols);
+    endResetModel();
+
+    qDebug() << QString("统一查询完成：%1行 × %2列").arg(totalRows).arg(totalCols);
+    return true;
+}
+
+QVariant ReportDataModel::getUnifiedQueryCellData(const QModelIndex& index, int role) const
+{
+    if (!index.isValid()) return QVariant();
+
+    UnifiedQueryParser* queryParser = dynamic_cast<UnifiedQueryParser*>(m_parser);
+    if (!queryParser) return QVariant();
+
+    int row = index.row();
+    int col = index.column();
+
+    const QVector<QDateTime>& timeAxis = queryParser->getTimeAxis();
+    const HistoryReportConfig& config = queryParser->getConfig();
+    const QHash<QString, QVector<double>>& data = queryParser->getAlignedData();
+
+    // ===== 判断当前是配置阶段还是报表阶段 =====
+    if (timeAxis.isEmpty()) {
+        // 【配置阶段】显示真实 cells（2列）
+        if (role == Qt::DisplayRole || role == Qt::EditRole) {
+            const CellData* cell = getCell(row, col);
+            return cell ? cell->value : QVariant();
+        }
+
+        if (role == Qt::BackgroundRole) {
+            return QBrush(QColor(250, 250, 250));
+        }
+
+        if (role == Qt::TextAlignmentRole) {
+            return (int)(Qt::AlignVCenter | Qt::AlignLeft);
+        }
+    }
+    else {
+        // 【报表阶段】显示虚拟数据
+        if (role == Qt::DisplayRole || role == Qt::EditRole) {
+            // 表头行
+            if (row == 0) {
+                if (col == 0) return "时间";
+                if (col - 1 < config.columns.size()) {
+                    return config.columns[col - 1].displayName;
+                }
+                return QVariant();
+            }
+
+            // 数据行
+            int dataRow = row - 1;
+            if (dataRow >= 0 && dataRow < timeAxis.size()) {
+                // 时间列
+                if (col == 0) {
+                    return timeAxis[dataRow].toString("yyyy-MM-dd HH:mm:ss");
+                }
+                // 数据列
+                else if (col - 1 < config.columns.size()) {
+                    QString rtuId = config.columns[col - 1].rtuId;
+                    if (data.contains(rtuId) && dataRow < data[rtuId].size()) {
+                        double value = data[rtuId][dataRow];
+                        if (std::isnan(value) || std::isinf(value)) {
+                            return "N/A";
+                        }
+                        return QString::number(value, 'f', 2);
+                    }
+                    return "N/A";
+                }
+            }
+        }
+
+        if (role == Qt::TextAlignmentRole) {
+            return (int)(Qt::AlignVCenter | Qt::AlignLeft);
+        }
+
+        if (role == Qt::BackgroundRole) {
+            if (row == 0) {
+                return QBrush(QColor(220, 220, 220));  // 表头灰色
+            }
+            return (row % 2 == 0) ? QBrush(Qt::white) : QBrush(QColor(248, 248, 248));
+        }
+
+        if (role == Qt::FontRole) {
+            QFont font;
+            if (row == 0) font.setBold(true);
+            return font;
+        }
+    }
+
+    return QVariant();
+}
+
+bool ReportDataModel::hasUnifiedQueryData() const
+{
+    if (m_currentMode != UNIFIED_QUERY_MODE || !m_parser) {
+        return false;
+    }
+
+    UnifiedQueryParser* queryParser = dynamic_cast<UnifiedQueryParser*>(m_parser);
+    return queryParser && !queryParser->getTimeAxis().isEmpty();
+}
+
+void ReportDataModel::setTimeRangeForQuery(const TimeRangeConfig& config)
+{
+    if (m_currentMode != UNIFIED_QUERY_MODE || !m_parser) {
+        qWarning() << "当前不是统一查询模式";
+        return;
+    }
+
+    UnifiedQueryParser* queryParser = dynamic_cast<UnifiedQueryParser*>(m_parser);
+    if (queryParser) {
+        queryParser->setTimeRange(config);
+        qDebug() << "时间范围已设置";
     }
 }
 
