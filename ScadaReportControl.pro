@@ -50,6 +50,7 @@ SOURCES += \
     BaseReportParser.cpp \
     MonthReportParser.cpp\
 	TimeSettingsDialog.cpp\
+	UnifiedQueryParser.cpp\
 
 # ============ 头文件 ============
 HEADERS += \
@@ -64,6 +65,7 @@ HEADERS += \
     BaseReportParser.h \
     MonthReportParser.h\
 	TimeSettingsDialog.h\
+	UnifiedQueryParser.h\
 
 # ============ 资源文件 ============
 RESOURCES += ReportTable.qrc

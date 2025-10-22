@@ -300,7 +300,7 @@ void MainWindow::onImportExcel()
         QFileInfo fileInfo(fileName);
         setWindowTitle(QString("SCADA报表控件 - [%1]").arg(fileInfo.fileName()));
 
-        ReportDataModel::ReportType reportType = m_dataModel->getReportType();
+        ReportDataModel::TemplateType reportType = m_dataModel->getReportType();
 
 
         // ===== 【关键修改】对于日报和月报，立即建立信号连接 =====
@@ -770,7 +770,7 @@ void MainWindow::onRefreshData()
         return;
     }
 
-    ReportDataModel::ReportType type = m_dataModel->getReportType();
+    ReportDataModel::TemplateType type = m_dataModel->getReportType();
 
     if (type == ReportDataModel::DAY_REPORT || type == ReportDataModel::MONTH_REPORT) {
         BaseReportParser* parser = m_dataModel->getParser();

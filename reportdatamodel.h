@@ -40,6 +40,7 @@ public:
 
     // ===== 模板类型枚举（仅在 TEMPLATE_MODE 下有效）=====
     enum TemplateType {
+        NORMAL_EXCEL,
         DAY_REPORT,
         MONTH_REPORT
     };
@@ -70,12 +71,6 @@ public:
     void saveRefreshSnapshot();  // 保存刷新快照
     bool isFirstRefresh() const { return m_isFirstRefresh; }
 
-    enum ReportType {
-        NORMAL_EXCEL, // 普通Excel或未识别
-        DAY_REPORT,   // 日报
-        MONTH_REPORT  // 为月报预留
-    };
-
 
     explicit ReportDataModel(QObject* parent = nullptr);
     ~ReportDataModel();
@@ -84,7 +79,7 @@ public:
     bool refreshReportData(QProgressDialog* progress); // 修改签名
     void restoreToTemplate(); // 新增函数
 
-    ReportType getReportType() const;
+    TemplateType getReportType() const;
     BaseReportParser* getParser() const;
     void notifyDataChanged();
 
@@ -195,7 +190,7 @@ private:
 
     QString m_reportName;                                     // 报表名称
 
-    ReportType m_reportType;
+    TemplateType m_reportType;
     BaseReportParser* m_parser;
 
     struct RefreshSnapshot {

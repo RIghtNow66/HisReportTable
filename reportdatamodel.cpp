@@ -508,7 +508,7 @@ void ReportDataModel::restoreToTemplate()
     notifyDataChanged();
 }
 
-ReportDataModel::ReportType ReportDataModel::getReportType() const {
+ReportDataModel::TemplateType ReportDataModel::getReportType() const {
     return m_reportType;
 }
 
