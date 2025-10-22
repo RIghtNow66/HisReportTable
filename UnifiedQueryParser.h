@@ -61,7 +61,8 @@ private:
     QString buildQueryAddress();
     QVector<QDateTime> generateTimeAxis();
     QHash<QString, QVector<double>> alignData(
-        const std::map<int64_t, std::vector<float>>& rawData);
+        const std::map<int64_t, std::vector<float>>& rawData,
+        const QVector<QDateTime>& timeAxis);
 };
 
 #endif // UNIFIEDQUERYPARSER_H

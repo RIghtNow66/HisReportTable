@@ -98,17 +98,24 @@ public:
 
     void startAsyncTask();
 
+    int getLastPrefetchSuccessCount() const { return m_lastPrefetchSuccessCount; }
+    int getLastPrefetchTotalCount() const { return m_lastPrefetchTotalCount; }
+
 signals:
+    // ===== 同步解析信号 =====
     void parseProgress(int current, int total);
-    void queryProgress(int current, int total);
     void parseCompleted(bool success, QString message);
+
+    // ===== 同步查询信号 =====
+    void queryProgress(int current, int total);
     void queryCompleted(int successCount, int failCount);
-    void prefetchProgress(int current, int total);
-    void databaseError(QString errorMessage);
 
-    void taskProgress(int current, int total);
+    // ===== 异步任务信号 =====
+    void taskProgress(int current, int total);  // 后台任务进度（预查询/数据对齐）
+    void asyncTaskCompleted(bool success, const QString& message);  // 异步任务完成
 
-    void asyncTaskCompleted(bool success, const QString& message);
+    // ===== 错误信号 =====
+    void databaseError(QString errorMessage);  // 数据库连接/查询错误
 
 protected:
     // ===== 子类需要实现的纯虚函数 =====

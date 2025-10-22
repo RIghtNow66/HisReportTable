@@ -598,183 +598,175 @@ QVariant ReportDataModel::data(const QModelIndex& index, int role) const
 
 bool ReportDataModel::refreshTemplateReport(QProgressDialog* progress)
 {
-        // ===== 【步骤1】检测变化类型 =====
-        ChangeType changeType = detectChanges();
-    
-        QString changeMsg;
-        bool needQuery = false;
-    
-        switch (changeType) {
-        case NO_CHANGE:
-            changeMsg = "数据已是最新，无需刷新。";
-            QMessageBox::information(nullptr, "无需刷新", changeMsg);
-            saveRefreshSnapshot();
-            return true;
-    
-        case FORMULA_ONLY: {
+    // ===== 【步骤1】检测变化类型 =====
+    ChangeType changeType = detectChanges();
+
+    QString changeMsg;
+    bool needQuery = false;
+
+    switch (changeType) {
+    case NO_CHANGE:
+        changeMsg = "数据已是最新，无需刷新。";
+        QMessageBox::information(nullptr, "无需刷新", changeMsg);
+        saveRefreshSnapshot();
+        return true;
+
+    case FORMULA_ONLY: {
+        int newFormulaCount = 0;
+        for (auto it = m_cells.constBegin(); it != m_cells.constEnd(); ++it) {
+            if (it.value() && it.value()->hasFormula && !it.value()->formulaCalculated) {
+                newFormulaCount++;
+            }
+        }
+        changeMsg = QString("检测到 %1 个新增公式，是否计算？\n\n注意：不会重新查询数据。")
+            .arg(newFormulaCount);
+        needQuery = false;
+        break;
+    }
+
+    case BINDING_ONLY: {
+        int newMarkerCount = 0;
+        if (m_reportType == DAY_REPORT || m_reportType == MONTH_REPORT) {
+            for (auto it = m_cells.constBegin(); it != m_cells.constEnd(); ++it) {
+                const CellData* cell = it.value();
+                if (cell && cell->cellType == CellData::DataMarker && !cell->queryExecuted) {
+                    newMarkerCount++;
+                }
+            }
+        }
+        else {
+            QList<QString> newBindings = getNewBindings();
+            newMarkerCount = newBindings.size();
+        }
+
+        changeMsg = QString("检测到 %1 个新增数据标记，是否查询？\n\n将查询新数据并重新计算所有公式。")
+            .arg(newMarkerCount);
+        needQuery = true;
+        break;
+    }
+
+    case MIXED_CHANGE: {
+        if (m_isFirstRefresh) {
+            needQuery = true;
+        }
+        else {
             int newFormulaCount = 0;
             for (auto it = m_cells.constBegin(); it != m_cells.constEnd(); ++it) {
                 if (it.value() && it.value()->hasFormula && !it.value()->formulaCalculated) {
                     newFormulaCount++;
                 }
             }
-            changeMsg = QString("检测到 %1 个新增公式，是否计算？\n\n注意：不会重新查询数据。")
-                .arg(newFormulaCount);
-            needQuery = false;
-            break;
-        }
-    
-        case BINDING_ONLY: {
-            int newMarkerCount = 0;
+
+            int newDataCount = 0;
             if (m_reportType == DAY_REPORT || m_reportType == MONTH_REPORT) {
                 for (auto it = m_cells.constBegin(); it != m_cells.constEnd(); ++it) {
                     const CellData* cell = it.value();
                     if (cell && cell->cellType == CellData::DataMarker && !cell->queryExecuted) {
-                        newMarkerCount++;
+                        newDataCount++;
                     }
                 }
             }
             else {
-                QList<QString> newBindings = getNewBindings();
-                newMarkerCount = newBindings.size();
+                newDataCount = getNewBindings().size();
             }
-    
-            changeMsg = QString("检测到 %1 个新增数据标记，是否查询？\n\n将查询新数据并重新计算所有公式。")
-                .arg(newMarkerCount);
+
+            changeMsg = QString("检测到数据变更：\n"
+                "• 新增数据标记: %1 个\n"
+                "• 新增公式: %2 个\n\n"
+                "是否执行完整刷新？")
+                .arg(newDataCount)
+                .arg(newFormulaCount);
             needQuery = true;
-            break;
         }
-    
-        case MIXED_CHANGE: {
-            if (m_isFirstRefresh) {
-                needQuery = true;
-            }
-            else {
-                int newFormulaCount = 0;
-                for (auto it = m_cells.constBegin(); it != m_cells.constEnd(); ++it) {
-                    if (it.value() && it.value()->hasFormula && !it.value()->formulaCalculated) {
-                        newFormulaCount++;
-                    }
-                }
-    
-                int newDataCount = 0;
-                if (m_reportType == DAY_REPORT || m_reportType == MONTH_REPORT) {
-                    for (auto it = m_cells.constBegin(); it != m_cells.constEnd(); ++it) {
-                        const CellData* cell = it.value();
-                        if (cell && cell->cellType == CellData::DataMarker && !cell->queryExecuted) {
-                            newDataCount++;
-                        }
-                    }
-                }
-                else {
-                    newDataCount = getNewBindings().size();
-                }
-    
-                changeMsg = QString("检测到数据变更：\n"
-                    "• 新增数据标记: %1 个\n"
-                    "• 新增公式: %2 个\n\n"
-                    "是否执行完整刷新？")
-                    .arg(newDataCount)
-                    .arg(newFormulaCount);
-                needQuery = true;
-            }
-            break;
+        break;
+    }
+    }
+
+    // ===== 【步骤2】用户确认（首次刷新跳过） =====
+    if (!m_isFirstRefresh && !changeMsg.isEmpty()) {
+        auto reply = QMessageBox::question(nullptr, "确认刷新", changeMsg,
+            QMessageBox::Yes | QMessageBox::No,
+            QMessageBox::Yes);
+        if (reply == QMessageBox::No) {
+            return false;
         }
+    }
+
+    // ===== 【步骤3】缓存有效性检查 =====
+    if (needQuery && (m_reportType == DAY_REPORT || m_reportType == MONTH_REPORT) && m_parser) {
+        if (!m_parser->isCacheValid()) {
+            qDebug() << "缓存已过期，将重新查询";
+            m_parser->invalidateCache();
         }
-    
-        // ===== 【步骤2】用户确认（首次刷新跳过） =====
-        if (!m_isFirstRefresh && !changeMsg.isEmpty()) {
-            auto reply = QMessageBox::question(nullptr, "确认刷新", changeMsg,
-                QMessageBox::Yes | QMessageBox::No,
-                QMessageBox::Yes);
-            if (reply == QMessageBox::No) {
-                return false;
-            }
-        }
-    
-        if (needQuery && (m_reportType == DAY_REPORT || m_reportType == MONTH_REPORT) && m_parser) {
-            if (!m_parser->isCacheValid()) {
-                qDebug() << "缓存已过期，将重新查询";
-                m_parser->invalidateCache();
-            }
-        }
-    
-        // ===== 【步骤3】执行刷新操作 =====
-        bool completedSuccessfully = false;
-        int actualSuccessCount = 0;
-    
-        // 根据 needQuery 决定是否查询
-        if (needQuery) {
-            // 需要查询数据
-            if ((m_reportType == DAY_REPORT || m_reportType == MONTH_REPORT) && m_parser) {
-                completedSuccessfully = m_parser->executeQueries(progress);
-    
-                // 统计实际成功的数据点
-                for (auto it = m_cells.constBegin(); it != m_cells.constEnd(); ++it) {
-                    const CellData* cell = it.value();
-                    if (cell && cell->cellType == CellData::DataMarker &&
-                        cell->queryExecuted && cell->querySuccess) {
-                        actualSuccessCount++;
-                    }
+    }
+
+    // ===== 【步骤4】执行查询操作 =====
+    bool completedSuccessfully = false;
+    int actualSuccessCount = 0;
+
+    if (needQuery) {
+        // 需要查询数据
+        if ((m_reportType == DAY_REPORT || m_reportType == MONTH_REPORT) && m_parser) {
+            completedSuccessfully = m_parser->executeQueries(progress);
+
+            // 统计实际成功的数据点
+            for (auto it = m_cells.constBegin(); it != m_cells.constEnd(); ++it) {
+                const CellData* cell = it.value();
+                if (cell && cell->cellType == CellData::DataMarker &&
+                    cell->queryExecuted && cell->querySuccess) {
+                    actualSuccessCount++;
                 }
             }
-            else if (m_reportType == NORMAL_EXCEL) {
-                qDebug() << "普通Excel不支持数据查询";
-                completedSuccessfully = true;
-            }
         }
-        else {
-            // 不需要查询，直接标记为成功
+        else if (m_reportType == NORMAL_EXCEL) {
+            qDebug() << "普通Excel不支持数据查询";
             completedSuccessfully = true;
         }
-    
-        // 在查询完成后添加
-        if (completedSuccessfully) {
-            qDebug() << "数据填充完成，开始计算公式...";
-            recalculateAllFormulas();
-    
-            // 执行内存优化
-            optimizeMemory();
-        }
-    
-        // ===== 【修改】在数据填充完成后，再计算公式 =====
+    }
+    else {
+        // 不需要查询，直接标记为成功
+        completedSuccessfully = true;
+    }
+
+    // ===== 【步骤5】计算公式（只执行一次）===== 
+    if (completedSuccessfully) {
         qDebug() << "数据填充完成，开始计算公式...";
         recalculateAllFormulas();
-        
         optimizeMemory();
-    
-        bool shouldEnterRunMode = false;
-    
-        // 保存快照
-        if ((m_reportType == DAY_REPORT || m_reportType == MONTH_REPORT) && m_parser) {
-            int totalTasks = m_parser->getPendingQueryCount();
-            if (totalTasks > 0) {
-                double successRate = static_cast<double>(actualSuccessCount) / totalTasks;
-                if (successRate >= 0.5) {
-                    saveRefreshSnapshot();
-                    shouldEnterRunMode = true;  // 进入运行模式
-                    qDebug() << QString("保存快照: 成功率 %1%").arg(successRate * 100, 0, 'f', 1);
-                }
-                else {
-                    shouldEnterRunMode = false;  // 保持编辑模式，允许用户修改重试
-                    qWarning() << QString("成功率过低 (%1%)，不保存快照").arg(successRate * 100, 0, 'f', 1);
-                }
-            }
-            else {
+    }
+
+    // ===== 【步骤6】保存快照并决定是否进入运行模式 =====
+    bool shouldEnterRunMode = false;
+
+    if ((m_reportType == DAY_REPORT || m_reportType == MONTH_REPORT) && m_parser) {
+        int totalTasks = m_parser->getPendingQueryCount();
+        if (totalTasks > 0) {
+            double successRate = static_cast<double>(actualSuccessCount) / totalTasks;
+            if (successRate >= 0.5) {
                 saveRefreshSnapshot();
                 shouldEnterRunMode = true;
+                qDebug() << QString("保存快照: 成功率 %1%").arg(successRate * 100, 0, 'f', 1);
+            }
+            else {
+                shouldEnterRunMode = false;
+                qWarning() << QString("成功率过低 (%1%)，不保存快照").arg(successRate * 100, 0, 'f', 1);
             }
         }
         else {
             saveRefreshSnapshot();
             shouldEnterRunMode = true;
         }
-    
-        if (shouldEnterRunMode) {
-            setEditMode(false);
-        }
-    
-        return completedSuccessfully;
+    }
+    else {
+        saveRefreshSnapshot();
+        shouldEnterRunMode = true;
+    }
+
+    if (shouldEnterRunMode) {
+        setEditMode(false);
+    }
+
+    return completedSuccessfully;
 }
 
 //  检查是否有##绑定

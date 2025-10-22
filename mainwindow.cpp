@@ -305,7 +305,7 @@ void MainWindow::onImportExcel()
         QFileInfo fileInfo(fileName);
         setWindowTitle(QString("SCADA报表控件 - [%1]").arg(fileInfo.fileName()));
 
-        // 根据模式给出不同提示
+        // ===== 根据模式给出不同提示 =====
         if (m_dataModel->isUnifiedQueryMode()) {
             QMessageBox::information(this, "统一查询模式",
                 "配置文件加载成功！\n\n"
@@ -319,27 +319,36 @@ void MainWindow::onImportExcel()
 
                 BaseReportParser* parser = m_dataModel->getParser();
                 if (parser) {
-                    disconnect(parser, &BaseReportParser::prefetchCompleted, this, nullptr);
-                    connect(parser, &BaseReportParser::prefetchCompleted,
-                        this, [this](bool hasData, int dataCount, int successCount, int totalCount) {
-                            if (!hasData) {
+                    // ===== 【修复】连接正确的信号 =====
+                    disconnect(parser, &BaseReportParser::asyncTaskCompleted, this, nullptr);
+                    connect(parser, &BaseReportParser::asyncTaskCompleted,
+                        this, [this](bool success, const QString& message) {
+                            if (!success) {
                                 QMessageBox::critical(this, "预查询失败",
-                                    "数据加载失败，未缓存任何数据！\n\n请检查数据库连接或稍后重试。");
+                                    "数据加载失败！\n\n" + message +
+                                    "\n\n请检查数据库连接或稍后重试。");
+                                return;
                             }
-                            else if (totalCount == 0 || successCount == totalCount) {
-                                QMessageBox::information(this, "预查询完成",
-                                    QString("数据加载完成！\n\n已缓存 %1 个数据点\n\n现在可以点击 [刷新数据] 填充报表。")
-                                    .arg(dataCount));
-                            }
-                            else if (successCount > 0) {
-                                int failCount = totalCount - successCount;
-                                QMessageBox::warning(this, "预查询部分完成",
-                                    QString("数据加载部分完成！\n\n"
-                                        "成功：%1/%2 次查询\n"
-                                        "失败：%3 次查询\n"
-                                        "已缓存：%4 个数据点\n\n"
-                                        "部分数据可能显示为 N/A，建议检查数据库连接。")
-                                    .arg(successCount).arg(totalCount).arg(failCount).arg(dataCount));
+
+                            // 成功时，检查成功率
+                            BaseReportParser* parser = m_dataModel->getParser();
+                            if (parser) {
+                                int successCount = parser->getLastPrefetchSuccessCount();
+                                int totalCount = parser->getLastPrefetchTotalCount();
+
+                                if (totalCount == 0 || successCount == totalCount) {
+                                    QMessageBox::information(this, "预查询完成",
+                                        QString("数据加载完成！\n\n已缓存数据\n\n现在可以点击 [刷新数据] 填充报表。"));
+                                }
+                                else if (successCount > 0) {
+                                    int failCount = totalCount - successCount;
+                                    QMessageBox::warning(this, "预查询部分完成",
+                                        QString("数据加载部分完成！\n\n"
+                                            "成功：%1/%2 次查询\n"
+                                            "失败：%3 次查询\n\n"
+                                            "部分数据可能显示为 N/A，建议检查数据库连接。")
+                                        .arg(successCount).arg(totalCount).arg(failCount));
+                                }
                             }
                         }, Qt::QueuedConnection);
                 }
@@ -847,17 +856,28 @@ void MainWindow::onRefreshData()
         // ===== 检测变化类型 =====
         ReportDataModel::UnifiedQueryChangeType changeType = m_dataModel->detectUnifiedQueryChanges();
 
-        auto reply = QMessageBox::question(
-            this,
-            "检测到新增公式",
-            "检测到新增公式，但数据未变化。\n\n"
-            "请选择操作：\n"
-            "• 计算公式：仅计算新增公式，不重新查询数据\n"
-            "• 重新查询：重新选择时间范围并查询数据\n\n"
-            "建议：如果只是添加了计算列，选择\"计算公式\"即可。",
-            QMessageBox::Yes | QMessageBox::No | QMessageBox::Cancel,
-            QMessageBox::Yes
-        );
+        // 如果只有公式变化，询问用户是否只计算公式
+        if (changeType == ReportDataModel::UQ_FORMULA_ONLY) {
+            auto reply = QMessageBox::question(
+                this,
+                "检测到新增公式",
+                "检测到新增公式，但数据未变化。\n\n"
+                "请选择操作：\n"
+                "• 是：仅计算新增公式，不重新查询数据\n"
+                "• 否：重新选择时间范围并查询数据\n\n"
+                "建议：如果只是添加了计算列，选择\"是\"即可。",
+                QMessageBox::Yes | QMessageBox::No,
+                QMessageBox::Yes
+            );
+
+            if (reply == QMessageBox::Yes) {
+                // 只计算公式
+                m_dataModel->recalculateAllFormulas();
+                QMessageBox::information(this, "完成", "公式计算完成！");
+                return;
+            }
+            // 否则继续弹出时间选择框
+        }
 
         // ===== 弹出时间选择窗口 =====
         if (!m_timeSettingsDialog) {
@@ -899,13 +919,14 @@ void MainWindow::onRefreshData()
             m_dataModel->getParser());
         if (!parser) return;
 
-        // 创建非模态进度框
+        // ===== 创建非模态进度框 =====
         m_unifiedQueryProgress = new QProgressDialog(
-            "正在查询数据...", "取消", 0, 0, this);
+            "正在初始化查询...", "取消", 0, 0, this);
         m_unifiedQueryProgress->setWindowModality(Qt::NonModal);
         m_unifiedQueryProgress->setMinimumDuration(500);
+        m_unifiedQueryProgress->show();
 
-        // 连接信号
+        // ===== 连接信号（在启动任务前） =====
         connect(parser, &UnifiedQueryParser::queryStageChanged,
             m_unifiedQueryProgress, &QProgressDialog::setLabelText,
             Qt::QueuedConnection);
@@ -925,7 +946,7 @@ void MainWindow::onRefreshData()
         connect(m_unifiedQueryProgress, &QProgressDialog::canceled,
             this, &MainWindow::onUnifiedQueryCanceled);
 
-        // 启动异步查询
+        // ===== 启动异步查询 =====
         m_dataModel->refreshReportData(nullptr);
 
         return;  // 立即返回，不等待
@@ -941,7 +962,8 @@ void MainWindow::onRefreshData()
             return;
         }
 
-        if (parser->isPrefetching()) {
+        // ===== 【修复】检查预查询状态 =====
+        if (parser->isAsyncTaskRunning()) {
             QMessageBox::information(this, "请稍候",
                 "数据正在后台加载中，请等待预查询完成后再刷新。\n\n"
                 "预查询完成后会自动弹窗提示。");
@@ -954,13 +976,13 @@ void MainWindow::onRefreshData()
         progress.setMinimumDuration(500);
 
         bool needsPrefetch = parser->getPendingQueryCount() > 0 &&
-            !parser->isPrefetching();
+            !parser->isCacheValid();
 
         if (needsPrefetch) {
             progress.setLabelText("正在预查询数据...");
             progress.setRange(0, 0);
 
-            connect(parser, &BaseReportParser::prefetchProgress,
+            connect(parser, &BaseReportParser::taskProgress,
                 &progress, [&progress](int current, int total) {
                     if (progress.maximum() != total) {
                         progress.setRange(0, total);
@@ -979,7 +1001,6 @@ void MainWindow::onRefreshData()
         }
 
         bool completed = m_dataModel->refreshReportData(&progress);
-
 
         disconnect(parser, nullptr, &progress, nullptr);
 
