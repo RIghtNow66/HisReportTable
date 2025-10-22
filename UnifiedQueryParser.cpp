@@ -42,9 +42,9 @@ bool UnifiedQueryParser::loadConfigFromCells()
         QString displayName = m_model->data(nameIndex, Qt::DisplayRole).toString().trimmed();
         QString rtuId = m_model->data(rtuIndex, Qt::DisplayRole).toString().trimmed();
 
-        // 跳过空行
+        // 遇到第一个完全空行就停止
         if (displayName.isEmpty() && rtuId.isEmpty()) {
-            continue;
+            break;  // 停止解析
         }
 
         // 验证完整性

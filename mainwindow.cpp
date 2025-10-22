@@ -25,6 +25,7 @@ MainWindow::MainWindow(QWidget* parent)
     , m_updating(false)
 	, m_formulaEditMode(false)
     , m_filterModel(nullptr)
+    , m_timeSettingsDialog(nullptr)
 {
 
     setupUI();
@@ -292,7 +293,6 @@ void MainWindow::onImportExcel()
     m_tableView->clearSpans();
     m_tableView->resetColumnWidthsBase();
 
-    // =====【修改】在加载前就建立信号连接 =====
     if (m_dataModel->loadReportTemplate(fileName)) {
         applyRowColumnSizes();
         m_tableView->updateSpans();
@@ -300,52 +300,49 @@ void MainWindow::onImportExcel()
         QFileInfo fileInfo(fileName);
         setWindowTitle(QString("SCADA报表控件 - [%1]").arg(fileInfo.fileName()));
 
-        ReportDataModel::TemplateType reportType = m_dataModel->getReportType();
-
-
-        // ===== 【关键修改】对于日报和月报，立即建立信号连接 =====
-        if (reportType == ReportDataModel::DAY_REPORT ||
-            reportType == ReportDataModel::MONTH_REPORT) {
-
-            BaseReportParser* parser = m_dataModel->getParser();
-            if (parser) 
-
-                // 先断开旧连接
-                disconnect(parser, &BaseReportParser::prefetchCompleted, this, nullptr);
-
-                // 建立新连接
-                connect(parser, &BaseReportParser::prefetchCompleted,
-                    this, [this](bool hasData, int dataCount, int successCount, int totalCount) {
-
-                        if (!hasData) {
-                            QMessageBox::critical(this, "预查询失败",
-                                "数据加载失败，未缓存任何数据！\n\n请检查数据库连接或稍后重试。");
-                        }
-                        else if (totalCount == 0 || successCount == totalCount) {
-                            QMessageBox::information(this, "预查询完成",
-                                QString("数据加载完成！\n\n已缓存 %1 个数据点\n\n现在可以点击 [刷新数据] 填充报表。")
-                                .arg(dataCount));
-                        }
-                        else if (successCount > 0) {
-                            int failCount = totalCount - successCount;
-                            QMessageBox::warning(this, "预查询部分完成",
-                                QString("数据加载部分完成！\n\n"
-                                    "成功：%1/%2 次查询\n"
-                                    "失败：%3 次查询\n"
-                                    "已缓存：%4 个数据点\n\n"
-                                    "部分数据可能显示为 N/A，建议检查数据库连接。")
-                                .arg(successCount).arg(totalCount).arg(failCount).arg(dataCount));
-                        }
-                    }, Qt::QueuedConnection);
-
-            }
-
-            // ===== 月报和日报都不立即弹窗，等预查询完成 =====        }
-        else {
-            // 普通Excel立即弹窗
-            QMessageBox::information(this, "成功", "文件导入成功！");
+        // 根据模式给出不同提示
+        if (m_dataModel->isUnifiedQueryMode()) {
+            QMessageBox::information(this, "统一查询模式",
+                "配置文件加载成功！\n\n"
+                "点击 [刷新数据] 按钮开始查询");
         }
+        else {
+            ReportDataModel::TemplateType reportType = m_dataModel->getReportType();
 
+            if (reportType == ReportDataModel::DAY_REPORT ||
+                reportType == ReportDataModel::MONTH_REPORT) {
+
+                BaseReportParser* parser = m_dataModel->getParser();
+                if (parser) {
+                    disconnect(parser, &BaseReportParser::prefetchCompleted, this, nullptr);
+                    connect(parser, &BaseReportParser::prefetchCompleted,
+                        this, [this](bool hasData, int dataCount, int successCount, int totalCount) {
+                            if (!hasData) {
+                                QMessageBox::critical(this, "预查询失败",
+                                    "数据加载失败，未缓存任何数据！\n\n请检查数据库连接或稍后重试。");
+                            }
+                            else if (totalCount == 0 || successCount == totalCount) {
+                                QMessageBox::information(this, "预查询完成",
+                                    QString("数据加载完成！\n\n已缓存 %1 个数据点\n\n现在可以点击 [刷新数据] 填充报表。")
+                                    .arg(dataCount));
+                            }
+                            else if (successCount > 0) {
+                                int failCount = totalCount - successCount;
+                                QMessageBox::warning(this, "预查询部分完成",
+                                    QString("数据加载部分完成！\n\n"
+                                        "成功：%1/%2 次查询\n"
+                                        "失败：%3 次查询\n"
+                                        "已缓存：%4 个数据点\n\n"
+                                        "部分数据可能显示为 N/A，建议检查数据库连接。")
+                                    .arg(successCount).arg(totalCount).arg(failCount).arg(dataCount));
+                            }
+                        }, Qt::QueuedConnection);
+                }
+            }
+            else {
+                QMessageBox::information(this, "成功", "文件导入成功！");
+            }
+        }
     }
     else {
         QMessageBox::warning(this, "错误", "文件加载或解析失败！\n\n请检查文件格式或模板标记是否正确。");
@@ -770,6 +767,60 @@ void MainWindow::onRefreshData()
         return;
     }
 
+    // ===== 统一查询模式：弹出时间选择框 =====
+    if (m_dataModel->isUnifiedQueryMode()) {
+        // 创建时间设置对话框（如果还未创建）
+        if (!m_timeSettingsDialog) {
+            m_timeSettingsDialog = new TimeSettingsDialog(this);
+        }
+
+        // 设置默认值（日报模式，今天0点开始）
+        QDateTime now = QDateTime::currentDateTime();
+        m_timeSettingsDialog->setStartTime(QDateTime(now.date(), QTime(0, 0, 0)));
+        m_timeSettingsDialog->setReportType(TimeSettingsDialog::Daily);
+
+        // 显示对话框
+        if (m_timeSettingsDialog->exec() != QDialog::Accepted) {
+            // 用户取消了
+            return;
+        }
+
+        // 获取用户选择的时间范围
+        TimeRangeConfig config;
+        config.startTime = m_timeSettingsDialog->getStartTime();
+        config.endTime = m_timeSettingsDialog->getEndTime();
+        config.intervalSeconds = m_timeSettingsDialog->getIntervalSeconds();
+
+        // 验证配置
+        if (!config.isValid()) {
+            QMessageBox::warning(this, "错误", "时间配置无效！");
+            return;
+        }
+
+        // 将配置传递给 Model
+        m_dataModel->setTimeRangeForQuery(config);
+
+        // 创建进度对话框
+        QProgressDialog progress("正在查询数据...", "取消", 0, 0, this);
+        progress.setWindowModality(Qt::WindowModal);
+        progress.setMinimumDuration(500);
+
+        // 执行查询
+        bool success = m_dataModel->refreshReportData(&progress);
+
+        if (!success) {
+            if (progress.wasCanceled()) {
+                QMessageBox::information(this, "已取消", "查询已被取消");
+            }
+            else {
+                QMessageBox::warning(this, "查询失败", "数据查询失败，请检查数据库连接或时间范围设置");
+            }
+        }
+
+        return;
+    }
+
+    // ===== 模板模式：直接从缓存刷新 =====
     ReportDataModel::TemplateType type = m_dataModel->getReportType();
 
     if (type == ReportDataModel::DAY_REPORT || type == ReportDataModel::MONTH_REPORT) {

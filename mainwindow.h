@@ -18,7 +18,7 @@
 #include <QSpinBox>
             
 
-
+#include "TimeSettingsDialog.h"
 #include "DataBindingConfig.h" 
 #include "EnhancedTableView.h"
 
@@ -104,6 +104,8 @@ private:
     QAction* m_deleteRowAction;
     QAction* m_deleteColAction;
     QAction* m_fillFormulaAction;
+
+    TimeSettingsDialog* m_timeSettingsDialog;
 
 private:
     void setupUI();

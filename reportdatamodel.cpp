@@ -66,7 +66,7 @@ bool ReportDataModel::loadReportTemplate(const QString& fileName)
     m_reportName = fileInfo.baseName();
 
     // ===== 识别统一查询模式 =====
-    if (baseName.startsWith("#REPO_", Qt::CaseInsensitive)) {
+    if (baseName.startsWith("##REPO_", Qt::CaseInsensitive)) {
         qDebug() << "检测到统一查询模式文件：" << baseName;
         m_currentMode = UNIFIED_QUERY_MODE;
         return loadUnifiedQueryConfig(fileName);  //
@@ -490,6 +490,8 @@ void ReportDataModel::restoreToTemplate()
             beginResetModel();
             updateModelSize(config.columns.size(), 2);
             endResetModel();
+
+            notifyDataChanged();
 
             qDebug() << "统一查询已还原到配置阶段";
             return;
@@ -929,24 +931,28 @@ Qt::ItemFlags ReportDataModel::flags(const QModelIndex& index) const
 {
     if (!index.isValid()) return Qt::NoItemFlags;
 
-    // ===== 新增：统一查询模式处理 =====
+    // ===== 统一查询模式处理 =====
     if (m_currentMode == UNIFIED_QUERY_MODE) {
         if (hasUnifiedQueryData()) {
             // 报表阶段：只读
             return Qt::ItemIsEnabled | Qt::ItemIsSelectable;
         }
         else {
-            // 配置阶段：可编辑
-            return Qt::ItemIsEnabled | Qt::ItemIsSelectable | Qt::ItemIsEditable;
+            // 配置阶段：可编辑（仅前2列）
+            if (index.column() < 2) {
+                return Qt::ItemIsEnabled | Qt::ItemIsSelectable | Qt::ItemIsEditable;
+            }
+            return Qt::ItemIsEnabled | Qt::ItemIsSelectable;
         }
-    }
+    } 
 
-    // ===== 运行模式下只读 =====
+    // ===== 模板模式处理 =====
+    // 运行模式下只读
     if (!m_editMode) {
         return Qt::ItemIsEnabled | Qt::ItemIsSelectable;
     }
 
-    // ... 原有的合并单元格判断逻辑 ...
+    // 合并单元格判断
     const CellData* cell = getCell(index.row(), index.column());
     if (cell && cell->mergedRange.isMerged()) {
         if (index.row() != cell->mergedRange.startRow ||
@@ -1227,6 +1233,8 @@ void ReportDataModel::clearAllCells()
 
     m_reportType = NORMAL_EXCEL;
     m_reportName.clear();
+
+    m_currentMode = TEMPLATE_MODE;
 
     // ===== 【新增】清空快照 =====
     m_lastSnapshot.bindingKeys.clear();
@@ -1589,6 +1597,19 @@ bool ReportDataModel::loadUnifiedQueryConfig(const QString& filePath)
         return false;
     }
 
+    UnifiedQueryParser* queryParser = dynamic_cast<UnifiedQueryParser*>(m_parser);
+    if (queryParser) {
+        const HistoryReportConfig& config = queryParser->getConfig();
+        if (config.columns.isEmpty()) {
+            qWarning() << "配置为空，未找到有效的列定义";
+            delete m_parser;
+            m_parser = nullptr;
+            clearAllCells();
+            return false;
+        }
+        qDebug() << QString("统一查询配置加载完成：%1 个数据列").arg(config.columns.size());
+    }
+
     qDebug() << "统一查询配置加载完成";
     return true;
 }
@@ -1597,30 +1618,37 @@ bool ReportDataModel::refreshUnifiedQuery(QProgressDialog* progress)
 {
     UnifiedQueryParser* queryParser = dynamic_cast<UnifiedQueryParser*>(m_parser);
     if (!queryParser) {
-        QMessageBox::warning(nullptr, "错误", "解析器类型错误");
+        qWarning() << "解析器类型错误";
         return false;
     }
 
-    // 1. 检查时间配置
-    if (queryParser->getQueryIntervalSeconds() == 0 &&
-        queryParser->getTimeAxis().isEmpty()) {
-        // 弹出时间设置对话框（由 MainWindow 负责）
-        // 这里只检查，不弹窗
-        QMessageBox::information(nullptr, "提示",
-            "请先点击工具栏的 [时间设置] 按钮设置查询时间范围");
+    // 检查时间配置（这里应该已经通过 setTimeRangeForQuery 设置过了）
+    if (queryParser->getQueryIntervalSeconds() == 0) {
+        qWarning() << "时间配置无效";
         return false;
     }
 
-    // 2. 执行查询
+    // 执行查询
+    if (progress) {
+        progress->setLabelText("正在查询数据...");
+        progress->setRange(0, 0);
+    }
+
     bool success = queryParser->executeQueries(progress);
 
     if (!success) {
+        qWarning() << "查询失败";
         return false;
     }
 
-    // 3. 更新 Model 尺寸
+    // 更新 Model 尺寸
     const QVector<QDateTime>& timeAxis = queryParser->getTimeAxis();
     const HistoryReportConfig& config = queryParser->getConfig();
+
+    if (timeAxis.isEmpty()) {
+        qWarning() << "查询未返回数据";
+        return false;
+    }
 
     int totalRows = timeAxis.size() + 1;  // +1 表头
     int totalCols = config.columns.size() + 1;  // +1 时间列
@@ -1629,7 +1657,20 @@ bool ReportDataModel::refreshUnifiedQuery(QProgressDialog* progress)
     updateModelSize(totalRows, totalCols);
     endResetModel();
 
+    if (progress) {
+        progress->setValue(100);
+    }
+
     qDebug() << QString("统一查询完成：%1行 × %2列").arg(totalRows).arg(totalCols);
+
+    // 显示成功消息
+    QMessageBox::information(nullptr, "查询成功",
+        QString("数据查询完成！\n\n"
+            "时间点：%1 个\n"
+            "数据列：%2 个")
+        .arg(timeAxis.size())
+        .arg(config.columns.size()));
+
     return true;
 }
 
