@@ -2,12 +2,26 @@
 #include "reportdatamodel.h"
 #include "TaosDataFetcher.h"
 #include <QMessageBox>
+#include <QtConcurrent>
 #include <QProgressDialog>
 #include <cmath>
 
 UnifiedQueryParser::UnifiedQueryParser(ReportDataModel* model, QObject* parent)
     : BaseReportParser(model, parent)
+    , m_queryWatcher(new QFutureWatcher<bool>(this))
+    , m_cancelRequested(0)
+    , m_isQuerying(false)
 {
+    connect(m_queryWatcher, &QFutureWatcher<bool>::finished,
+        this, &UnifiedQueryParser::onQueryFinished);
+}
+
+UnifiedQueryParser::~UnifiedQueryParser()
+{
+    if (m_isQuerying) {
+        m_cancelRequested.storeRelease(1);
+        m_queryFuture.waitForFinished();
+    }
 }
 
 void UnifiedQueryParser::setTimeRange(const TimeRangeConfig& config)
@@ -70,8 +84,68 @@ bool UnifiedQueryParser::loadConfigFromCells()
     return true;
 }
 
-bool UnifiedQueryParser::executeQueries(QProgressDialog* progress)
+void UnifiedQueryParser::requestCancel()
 {
+    m_cancelRequested.storeRelease(1);
+    qDebug() << "统一查询收到取消请求";
+}
+
+void UnifiedQueryParser::onQueryFinished()
+{
+    m_isQuerying = false;
+    bool success = m_queryFuture.result();
+
+    QString message;
+    if (m_cancelRequested.loadAcquire()) {
+        message = "查询已取消";
+        emit queryCompletedWithStatus(false, message);
+    }
+    else if (success) {
+        message = QString("查询成功：%1行数据").arg(m_timeAxis.size());
+        emit queryCompletedWithStatus(true, message);
+    }
+    else {
+        message = "查询失败，请检查数据库连接";
+        emit queryCompletedWithStatus(false, message);
+    }
+}
+
+void UnifiedQueryParser::startAsyncQuery()
+{
+    if (m_isQuerying) {
+        qWarning() << "查询已在进行中";
+        return;
+    }
+
+    m_isQuerying = true;
+    m_cancelRequested.storeRelease(0);
+
+    m_queryFuture = QtConcurrent::run([this]() -> bool {
+        try {
+            return this->executeQueriesInternal();
+        }
+        catch (const std::exception& e) {
+            qWarning() << "查询异常：" << e.what();
+            return false;
+        }
+        });
+
+    m_queryWatcher->setFuture(m_queryFuture);
+}
+
+bool UnifiedQueryParser::executeQueriesInternal()
+{
+    // 把原 executeQueries() 的所有代码复制到这里
+    // 删除所有 progress 相关代码
+    // 添加取消检查
+
+    if (m_cancelRequested.loadAcquire()) return false;
+
+    emit queryStageChanged("正在生成时间轴...");
+    m_timeAxis = generateTimeAxis();
+
+    if (m_cancelRequested.loadAcquire()) return false;
+
     if (m_config.columns.isEmpty()) {
         return false;
     }
@@ -84,9 +158,6 @@ bool UnifiedQueryParser::executeQueries(QProgressDialog* progress)
     emit queryStageChanged("正在生成时间轴...");
     m_timeAxis = generateTimeAxis();
 
-    if (progress) {
-        progress->setValue(10);
-    }
 
     if (m_timeAxis.isEmpty()) {
         return false;
@@ -96,10 +167,6 @@ bool UnifiedQueryParser::executeQueries(QProgressDialog* progress)
     emit queryStageChanged("正在构造查询语句...");
     QString queryAddr = buildQueryAddress();
     qDebug() << "查询地址：" << queryAddr;
-
-    if (progress) {
-        progress->setValue(20);
-    }
 
     // ===== 阶段3：执行数据库查询 =====
     emit queryStageChanged(QString("正在查询数据库（%1 个RTU）...").arg(m_config.columns.size()));
@@ -113,9 +180,6 @@ bool UnifiedQueryParser::executeQueries(QProgressDialog* progress)
         return false;
     }
 
-    if (progress) {
-        progress->setValue(60);
-    }
 
     if (rawData.empty()) {
         return false;
@@ -125,12 +189,18 @@ bool UnifiedQueryParser::executeQueries(QProgressDialog* progress)
     emit queryStageChanged(QString("正在对齐数据（%1 个时间点）...").arg(m_timeAxis.size()));
     m_alignedData = alignData(rawData);
 
-    if (progress) {
-        progress->setValue(100);
-    }
 
     qDebug() << "查询完成";
     return true;
+
+}
+
+bool UnifiedQueryParser::executeQueries(QProgressDialog* progress)
+{
+    // 保持接口不变，但标记为废弃（同步调用）
+    Q_UNUSED(progress)
+        qWarning() << "同步查询已废弃，请使用 startAsyncQuery()";
+    return executeQueriesInternal();
 }
 
 void UnifiedQueryParser::restoreToTemplate()

@@ -311,186 +311,12 @@ void ReportDataModel::recalculateAllFormulas()
     notifyDataChanged();
 }
 
-//bool ReportDataModel::refreshReportData(QProgressDialog* progress)
-//{
-//    // ===== 【步骤1】检测变化类型 =====
-//    ChangeType changeType = detectChanges();
-//
-//    QString changeMsg;
-//    bool needQuery = false;
-//
-//    switch (changeType) {
-//    case NO_CHANGE:
-//        changeMsg = "数据已是最新，无需刷新。";
-//        QMessageBox::information(nullptr, "无需刷新", changeMsg);
-//        saveRefreshSnapshot();
-//        return true;
-//
-//    case FORMULA_ONLY: {
-//        int newFormulaCount = 0;
-//        for (auto it = m_cells.constBegin(); it != m_cells.constEnd(); ++it) {
-//            if (it.value() && it.value()->hasFormula && !it.value()->formulaCalculated) {
-//                newFormulaCount++;
-//            }
-//        }
-//        changeMsg = QString("检测到 %1 个新增公式，是否计算？\n\n注意：不会重新查询数据。")
-//            .arg(newFormulaCount);
-//        needQuery = false;
-//        break;
-//    }
-//
-//    case BINDING_ONLY: {
-//        int newMarkerCount = 0;
-//        if (m_reportType == DAY_REPORT || m_reportType == MONTH_REPORT) {
-//            for (auto it = m_cells.constBegin(); it != m_cells.constEnd(); ++it) {
-//                const CellData* cell = it.value();
-//                if (cell && cell->cellType == CellData::DataMarker && !cell->queryExecuted) {
-//                    newMarkerCount++;
-//                }
-//            }
-//        }
-//        else {
-//            QList<QString> newBindings = getNewBindings();
-//            newMarkerCount = newBindings.size();
-//        }
-//
-//        changeMsg = QString("检测到 %1 个新增数据标记，是否查询？\n\n将查询新数据并重新计算所有公式。")
-//            .arg(newMarkerCount);
-//        needQuery = true;
-//        break;
-//    }
-//
-//    case MIXED_CHANGE: {
-//        if (m_isFirstRefresh) {
-//            needQuery = true;
-//        }
-//        else {
-//            int newFormulaCount = 0;
-//            for (auto it = m_cells.constBegin(); it != m_cells.constEnd(); ++it) {
-//                if (it.value() && it.value()->hasFormula && !it.value()->formulaCalculated) {
-//                    newFormulaCount++;
-//                }
-//            }
-//
-//            int newDataCount = 0;
-//            if (m_reportType == DAY_REPORT || m_reportType == MONTH_REPORT) {
-//                for (auto it = m_cells.constBegin(); it != m_cells.constEnd(); ++it) {
-//                    const CellData* cell = it.value();
-//                    if (cell && cell->cellType == CellData::DataMarker && !cell->queryExecuted) {
-//                        newDataCount++;
-//                    }
-//                }
-//            }
-//            else {
-//                newDataCount = getNewBindings().size();
-//            }
-//
-//            changeMsg = QString("检测到数据变更：\n"
-//                "• 新增数据标记: %1 个\n"
-//                "• 新增公式: %2 个\n\n"
-//                "是否执行完整刷新？")
-//                .arg(newDataCount)
-//                .arg(newFormulaCount);
-//            needQuery = true;
-//        }
-//        break;
-//    }
-//    }
-//
-//    // ===== 【步骤2】用户确认（首次刷新跳过） =====
-//    if (!m_isFirstRefresh && !changeMsg.isEmpty()) {
-//        auto reply = QMessageBox::question(nullptr, "确认刷新", changeMsg,
-//            QMessageBox::Yes | QMessageBox::No,
-//            QMessageBox::Yes);
-//        if (reply == QMessageBox::No) {
-//            return false;
-//        }
-//    }
-//
-//    if (needQuery && (m_reportType == DAY_REPORT || m_reportType == MONTH_REPORT) && m_parser) {
-//        if (!m_parser->isCacheValid()) {
-//            qDebug() << "缓存已过期，将重新查询";
-//            m_parser->invalidateCache();
-//        }
-//    }
-//
-//    // ===== 【步骤3】执行刷新操作 =====
-//    bool completedSuccessfully = false;
-//    int actualSuccessCount = 0;
-//
-//    // 根据 needQuery 决定是否查询
-//    if (needQuery) {
-//        // 需要查询数据
-//        if ((m_reportType == DAY_REPORT || m_reportType == MONTH_REPORT) && m_parser) {
-//            completedSuccessfully = m_parser->executeQueries(progress);
-//
-//            // 统计实际成功的数据点
-//            for (auto it = m_cells.constBegin(); it != m_cells.constEnd(); ++it) {
-//                const CellData* cell = it.value();
-//                if (cell && cell->cellType == CellData::DataMarker &&
-//                    cell->queryExecuted && cell->querySuccess) {
-//                    actualSuccessCount++;
-//                }
-//            }
-//        }
-//        else if (m_reportType == NORMAL_EXCEL) {
-//            qDebug() << "普通Excel不支持数据查询";
-//            completedSuccessfully = true;
-//        }
-//    }
-//    else {
-//        // 不需要查询，直接标记为成功
-//        completedSuccessfully = true;
-//    }
-//
-//    // 在查询完成后添加
-//    if (completedSuccessfully) {
-//        qDebug() << "数据填充完成，开始计算公式...";
-//        recalculateAllFormulas();
-//
-//        // 执行内存优化
-//        optimizeMemory();
-//    }
-//
-//    // ===== 【修改】在数据填充完成后，再计算公式 =====
-//    qDebug() << "数据填充完成，开始计算公式...";
-//    recalculateAllFormulas();
-//    
-//    optimizeMemory();
-//
-//    bool shouldEnterRunMode = false;
-//
-//    // 保存快照
-//    if ((m_reportType == DAY_REPORT || m_reportType == MONTH_REPORT) && m_parser) {
-//        int totalTasks = m_parser->getPendingQueryCount();
-//        if (totalTasks > 0) {
-//            double successRate = static_cast<double>(actualSuccessCount) / totalTasks;
-//            if (successRate >= 0.5) {
-//                saveRefreshSnapshot();
-//                shouldEnterRunMode = true;  // 进入运行模式
-//                qDebug() << QString("保存快照: 成功率 %1%").arg(successRate * 100, 0, 'f', 1);
-//            }
-//            else {
-//                shouldEnterRunMode = false;  // 保持编辑模式，允许用户修改重试
-//                qWarning() << QString("成功率过低 (%1%)，不保存快照").arg(successRate * 100, 0, 'f', 1);
-//            }
-//        }
-//        else {
-//            saveRefreshSnapshot();
-//            shouldEnterRunMode = true;
-//        }
-//    }
-//    else {
-//        saveRefreshSnapshot();
-//        shouldEnterRunMode = true;
-//    }
-//
-//    if (shouldEnterRunMode) {
-//        setEditMode(false);
-//    }
-//
-//    return completedSuccessfully;
-//}
+void ReportDataModel::resetModelSize(int rows, int cols)
+{
+    beginResetModel();
+    updateModelSize(rows, cols);  // 你自己的逻辑
+    endResetModel();
+}
 
 bool ReportDataModel::refreshReportData(QProgressDialog* progress)
 {
@@ -1765,7 +1591,9 @@ bool ReportDataModel::loadUnifiedQueryConfig(const QString& filePath)
 // ReportDataModel.cpp refreshUnifiedQuery()
 bool ReportDataModel::refreshUnifiedQuery(QProgressDialog* progress)
 {
-    UnifiedQueryParser* queryParser = dynamic_cast<UnifiedQueryParser*>(m_parser);
+    Q_UNUSED(progress)  // 不再使用同步进度框
+
+        UnifiedQueryParser* queryParser = dynamic_cast<UnifiedQueryParser*>(m_parser);
     if (!queryParser) {
         qWarning() << "解析器类型错误";
         return false;
@@ -1786,7 +1614,7 @@ bool ReportDataModel::refreshUnifiedQuery(QProgressDialog* progress)
     }
 
     if (changeType == UQ_NO_CHANGE && hasUnifiedQueryData()) {
-        // 已有数据且无变化，直接返回成功（或者提示用户）
+        // 已有数据且无变化，提示用户
         auto reply = QMessageBox::question(nullptr, "确认刷新",
             "当前数据无变化。\n\n"
             "是否重新查询数据？",
@@ -1796,75 +1624,19 @@ bool ReportDataModel::refreshUnifiedQuery(QProgressDialog* progress)
         if (reply == QMessageBox::No) {
             return false;
         }
-        // 用户选择 Yes，继续执行查询
     }
 
-    // ===== 执行数据查询 =====
-    // 检查时间配置
+    // ===== 检查时间配置 =====
     if (queryParser->getQueryIntervalSeconds() == 0 &&
         queryParser->getTimeAxis().isEmpty()) {
         qWarning() << "时间配置无效";
         return false;
     }
 
-    // 执行查询
-    if (progress) {
-        progress->setLabelText("正在查询数据...");
-        progress->setRange(0, 0);
-    }
+    // ===== 启动异步查询 =====
+    queryParser->startAsyncQuery();
 
-    bool success = queryParser->executeQueries(progress);
-
-    if (!success) {
-        qWarning() << "查询失败";
-        return false;
-    }
-
-    // 更新 Model 尺寸
-    const QVector<QDateTime>& timeAxis = queryParser->getTimeAxis();
-    const HistoryReportConfig& config = queryParser->getConfig();
-
-    if (timeAxis.isEmpty()) {
-        qWarning() << "查询未返回数据";
-        return false;
-    }
-
-    int totalRows = timeAxis.size() + 1;  // +1 表头
-    int totalCols = config.columns.size() + 1;  // +1 时间列
-
-    // ===== 保留用户自定义列 =====
-    int oldMaxCol = m_maxCol;
-    int userDefinedCols = oldMaxCol - m_dataColumnCount - 1;  // 用户添加的列数
-    if (userDefinedCols > 0) {
-        totalCols += userDefinedCols;
-        qDebug() << QString("保留 %1 个用户自定义列").arg(userDefinedCols);
-    }
-
-    m_dataColumnCount = config.columns.size();
-
-    beginResetModel();
-    updateModelSize(totalRows, totalCols);
-    endResetModel();
-
-    // ===== 计算公式 =====
-    recalculateAllFormulas();
-
-    if (progress) {
-        progress->setValue(100);
-    }
-
-    qDebug() << QString("统一查询完成：%1行 × %2列（数据列：%3）")
-        .arg(totalRows).arg(totalCols).arg(m_dataColumnCount);
-
-    // 显示成功消息
-    QMessageBox::information(nullptr, "查询成功",
-        QString("数据查询完成！\n\n"
-            "时间点：%1 个\n"
-            "数据列：%2 个\n\n"
-            "提示：时间列和数据列为只读，您可以在右侧添加自定义列和公式。")
-        .arg(timeAxis.size())
-        .arg(config.columns.size()));
-
+    // 立即返回，不等待查询完成
     return true;
 }
 

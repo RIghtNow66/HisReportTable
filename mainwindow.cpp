@@ -18,7 +18,8 @@
 #include "EnhancedTableView.h"
 #include "TaosDataFetcher.h"
 #include "DayReportParser.h" 
-
+#include "MonthReportParser.h"
+#include "UnifiedQueryParser.h"
 
 MainWindow::MainWindow(QWidget* parent)
     : QMainWindow(parent)
@@ -41,6 +42,10 @@ MainWindow::MainWindow(QWidget* parent)
 
 MainWindow::~MainWindow()
 {
+    if (m_unifiedQueryProgress) {
+        m_unifiedQueryProgress->close();
+        delete m_unifiedQueryProgress;
+    }
 }
 
 void MainWindow::setupUI()
@@ -760,6 +765,74 @@ void MainWindow::applyRowColumnSizes()
     m_tableView->saveBaseRowHeights();
 }
 
+void MainWindow::onUnifiedQueryCanceled()
+{
+    UnifiedQueryParser* parser = dynamic_cast<UnifiedQueryParser*>(
+        m_dataModel->getParser());
+    if (parser) {
+        parser->requestCancel();
+    }
+
+    if (m_unifiedQueryProgress) {
+        m_unifiedQueryProgress->setLabelText("正在取消查询...");
+        m_unifiedQueryProgress->setCancelButton(nullptr);
+    }
+}
+
+void MainWindow::onUnifiedQueryCompleted(bool success, QString message)
+{
+    // 关闭进度框
+    if (m_unifiedQueryProgress) {
+        m_unifiedQueryProgress->close();
+        m_unifiedQueryProgress->deleteLater();
+        m_unifiedQueryProgress = nullptr;
+    }
+
+    if (success) {
+        UnifiedQueryParser* parser = dynamic_cast<UnifiedQueryParser*>(
+            m_dataModel->getParser());
+        if (!parser) return;
+
+        // ===== 补充：更新 Model 尺寸 =====
+        const QVector<QDateTime>& timeAxis = parser->getTimeAxis();
+        const HistoryReportConfig& config = parser->getConfig();
+
+        if (!timeAxis.isEmpty()) {
+            int totalRows = timeAxis.size() + 1;
+            int totalCols = config.columns.size() + 1;
+
+            // 保留用户自定义列
+            int oldMaxCol = m_dataModel->columnCount();
+            int dataColumnCount = m_dataModel->getDataColumnCount();
+            int userDefinedCols = oldMaxCol - dataColumnCount - 1;
+            if (userDefinedCols > 0) {
+                totalCols += userDefinedCols;
+            }
+
+            m_dataModel->setDataColumnCount(config.columns.size());
+
+            // 更新尺寸
+			m_dataModel->resetModelSize(totalRows, totalCols);
+        }
+
+        // ===== 补充：计算公式 =====
+        m_dataModel->recalculateAllFormulas();
+        m_dataModel->notifyDataChanged();
+
+        // ===== 补充：显示详细成功消息 =====
+        QMessageBox::information(this, "查询成功",
+            QString("数据查询完成！\n\n"
+                "时间点：%1 个\n"
+                "数据列：%2 个\n\n"
+                "提示：时间列和数据列为只读，您可以在右侧添加自定义列和公式。")
+            .arg(timeAxis.size())
+            .arg(config.columns.size()));
+    }
+    else {
+        QMessageBox::warning(this, "查询失败", message);
+    }
+}
+
 void MainWindow::onRefreshData()
 {
     if (m_dataModel->getAllCells().isEmpty()) {
@@ -822,24 +895,32 @@ void MainWindow::onRefreshData()
         // 将配置传递给 Model
         m_dataModel->setTimeRangeForQuery(config);
 
-        // 创建进度对话框
-        QProgressDialog progress("正在查询数据...", "取消", 0, 0, this);
-        progress.setWindowModality(Qt::WindowModal);
-        progress.setMinimumDuration(500);
+        UnifiedQueryParser* parser = dynamic_cast<UnifiedQueryParser*>(
+            m_dataModel->getParser());
+        if (!parser) return;
 
-        // 执行查询
-        bool success = m_dataModel->refreshReportData(&progress);
+        // 创建非模态进度框
+        m_unifiedQueryProgress = new QProgressDialog(
+            "正在查询数据...", "取消", 0, 0, this);
+        m_unifiedQueryProgress->setWindowModality(Qt::NonModal);
+        m_unifiedQueryProgress->setMinimumDuration(500);
 
-        if (!success) {
-            if (progress.wasCanceled()) {
-                QMessageBox::information(this, "已取消", "查询已被取消");
-            }
-            else {
-                QMessageBox::warning(this, "查询失败", "数据查询失败，请检查数据库连接或时间范围设置");
-            }
-        }
+        // 连接信号
+        connect(parser, &UnifiedQueryParser::queryStageChanged,
+            m_unifiedQueryProgress, &QProgressDialog::setLabelText,
+            Qt::QueuedConnection);
 
-        return;
+        connect(parser, &UnifiedQueryParser::queryCompletedWithStatus,
+            this, &MainWindow::onUnifiedQueryCompleted,
+            Qt::QueuedConnection);
+
+        connect(m_unifiedQueryProgress, &QProgressDialog::canceled,
+            this, &MainWindow::onUnifiedQueryCanceled);
+
+        // 启动异步查询
+        m_dataModel->refreshReportData(nullptr);  // 内部会调 startAsyncQuery()
+
+        return;  // 立即返回，不等待
     }
 
     // ===== 模板模式：直接从缓存刷新 =====

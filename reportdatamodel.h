@@ -145,6 +145,10 @@ public:
 
     UnifiedQueryChangeType detectUnifiedQueryChanges();
 
+    void resetModelSize(int rows, int cols);
+
+    void setDataColumnCount(int count) { m_dataColumnCount = count; }
+
 signals:
     void cellChanged(int row, int col);
     void editModeChanged(bool editMode);

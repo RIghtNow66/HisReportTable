@@ -16,6 +16,7 @@
 #include <QGroupBox>
 #include <QRadioButton>
 #include <QSpinBox>
+#include <QProgressDialog>
             
 
 #include "TimeSettingsDialog.h"
@@ -62,6 +63,9 @@ private slots:
     // 模式切换响应
     void onEditModeChanged(bool editMode);
 
+    void onUnifiedQueryCompleted(bool success, QString message);
+    void onUnifiedQueryCanceled();
+
 private:
     // UI组件
     QWidget* m_centralWidget;
@@ -106,6 +110,8 @@ private:
     QAction* m_fillFormulaAction;
 
     TimeSettingsDialog* m_timeSettingsDialog;
+
+    QProgressDialog* m_unifiedQueryProgress = nullptr;
 
 private:
     void setupUI();
