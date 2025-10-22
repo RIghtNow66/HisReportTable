@@ -27,6 +27,12 @@ class BaseReportParser : public QObject
     Q_OBJECT
 
 public:
+    enum EditState {
+        CONFIG_EDIT,      // 配置阶段可编辑
+        PREFETCHING,      // 预查询中（禁止编辑）
+        REPORT_READY      // 报表就绪（模板模式不可编辑，统一查询部分可编辑）
+    };
+
     // ===== 缓存键结构（所有报表通用） =====
     struct CacheKey {
         QString rtuId;
@@ -84,6 +90,9 @@ public:
 
     bool isCacheValid() const;                         // 新增
     void invalidateCache();                            // 新增
+
+    EditState getEditState() const { return m_editState; }
+    void setEditState(EditState state) { m_editState = state; }
 
 signals:
     void parseProgress(int current, int total);
@@ -219,6 +228,8 @@ protected:
 
     int m_lastPrefetchSuccessCount;
     int m_lastPrefetchTotalCount;
+
+    EditState m_editState;
 
 private:
     QDateTime m_cacheTimestamp;                        // 新增

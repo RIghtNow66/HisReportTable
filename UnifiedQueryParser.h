@@ -26,6 +26,11 @@ public:
 
     int getQueryIntervalSeconds() const override { return m_timeConfig.intervalSeconds; }
 
+signals:
+    // 查询进度信号（在后台线程中发射，主线程接收）
+    void queryProgressUpdated(int current, int total);
+    void queryStageChanged(QString stage);  // 查询阶段变化（如"正在生成时间轴"、"正在查询数据库"等）
+
 protected:
     // ===== 实现纯虚函数（统一查询不需要这些）=====
     bool findDateMarker() override { return true; }
@@ -35,6 +40,9 @@ protected:
         Q_UNUSED(date); Q_UNUSED(time); return QDateTime();
     }
 
+
+    bool analyzeAndPrefetch() override { return true; }  // 空实现
+    QList<TimeBlock> identifyTimeBlocks() override { return QList<TimeBlock>(); }  // 空实现
 private:
     // ===== 私有辅助函数 =====
     bool loadConfigFromCells();

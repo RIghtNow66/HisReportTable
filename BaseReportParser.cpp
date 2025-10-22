@@ -23,6 +23,7 @@ BaseReportParser::BaseReportParser(ReportDataModel* model, QObject* parent)
     , m_lastPrefetchSuccessCount(0)  
     , m_lastPrefetchTotalCount(0)
     , m_cacheTimestamp()
+    , m_editState(CONFIG_EDIT)
 {
     // 创建 FutureWatcher
     m_prefetchWatcher = new QFutureWatcher<bool>(this);
@@ -65,6 +66,9 @@ void BaseReportParser::onPrefetchFinished()
     // 获取统计信息
     int successCount = m_lastPrefetchSuccessCount;
     int totalCount = m_lastPrefetchTotalCount;
+
+    setEditState(CONFIG_EDIT);
+    m_model->updateEditability();
 
     if (dataCount > 0) {
         qDebug() << QString("预查询完成：已缓存 %1 个数据点（成功 %2/%3）")

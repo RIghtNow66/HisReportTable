@@ -52,7 +52,7 @@ ReportDataModel::~ReportDataModel()
 // ===== 统一的模板加载入口 =====
 bool ReportDataModel::loadReportTemplate(const QString& fileName)
 {
-    // 1. 清理旧状态，并将刷新标记重置为 false
+    // 1. 清理旧状态
     clearAllCells();
 
     // 2. 加载基础Excel数据
@@ -65,45 +65,77 @@ bool ReportDataModel::loadReportTemplate(const QString& fileName)
     QString baseName = fileInfo.fileName();
     m_reportName = fileInfo.baseName();
 
+    qDebug() << "加载文件：" << baseName;
+
     // ===== 识别统一查询模式 =====
     if (baseName.startsWith("##REPO_", Qt::CaseInsensitive)) {
         qDebug() << "检测到统一查询模式文件：" << baseName;
-        m_currentMode = UNIFIED_QUERY_MODE;
-        return loadUnifiedQueryConfig(fileName);  //
+        m_currentMode = UNIFIED_QUERY_MODE;  // 明确设置
+        m_reportType = NORMAL_EXCEL;
+
+        bool success = loadUnifiedQueryConfig(fileName);
+        if (success) {
+            setEditMode(true);
+            notifyDataChanged();
+            qDebug() << "统一查询配置加载成功，当前模式：" << m_currentMode;
+        }
+        return success;
     }
 
-
+    // ===== 识别日报模式 =====
     if (baseName.startsWith("##Day_", Qt::CaseInsensitive)) {
         m_reportType = DAY_REPORT;
+        m_currentMode = TEMPLATE_MODE;  // 明确设置
         qDebug() << "检测到日报模板，开始解析...";
 
-        // 创建日报解析器
         m_parser = new DayReportParser(this, this);
 
         if (!m_parser->scanAndParse()) {
             clearAllCells();
             return false;
         }
+
+        // 连接预查询完成信号
+        connect(m_parser, &BaseReportParser::prefetchCompleted,
+            this, [this](bool hasData, int dataCount, int successCount, int totalCount) {
+                // 预查询完成后的处理在 MainWindow 中
+            }, Qt::QueuedConnection);
+
+        setEditMode(true);
+        notifyDataChanged();
+        return true;
     }
-    else if (baseName.startsWith("##Month_", Qt::CaseInsensitive)) {  // 新增
+
+    // ===== 识别月报模式 =====
+    if (baseName.startsWith("##Month_", Qt::CaseInsensitive)) {
         m_reportType = MONTH_REPORT;
+        m_currentMode = TEMPLATE_MODE;  //  明确设置
         qDebug() << "检测到月报模板，开始解析...";
 
-        // 创建月报解析器
         m_parser = new MonthReportParser(this, this);
 
         if (!m_parser->scanAndParse()) {
             clearAllCells();
             return false;
         }
-    }
-    else {
-        m_reportType = NORMAL_EXCEL;
-        qDebug() << "加载普通Excel文件。";
+
+        // 连接预查询完成信号
+        connect(m_parser, &BaseReportParser::prefetchCompleted,
+            this, [this](bool hasData, int dataCount, int successCount, int totalCount) {
+                // 预查询完成后的处理在 MainWindow 中
+            }, Qt::QueuedConnection);
+
+        setEditMode(true);
+        notifyDataChanged();
+        return true;
     }
 
+    // ===== 普通 Excel =====
+    m_reportType = NORMAL_EXCEL;
+    m_currentMode = TEMPLATE_MODE;  //  明确设置
+    qDebug() << "加载普通Excel文件。";
+
     setEditMode(true);
-    // 无论加载何种类型，都通知视图进行一次初始显示
     notifyDataChanged();
     return true;
 }
@@ -473,31 +505,15 @@ bool ReportDataModel::refreshReportData(QProgressDialog* progress)
     return false;
 }
 
-void ReportDataModel::restoreToTemplate()
+void ReportDataModel::restoreTemplateReport()
 {
-    if ((m_reportType == DAY_REPORT || m_reportType == MONTH_REPORT) && m_parser) {
+    qDebug() << "还原模板模式配置...";
+
+    if (m_parser) {
         m_parser->restoreToTemplate();
     }
 
-    // ===== 统一查询模式支持 =====
-    if (m_currentMode == UNIFIED_QUERY_MODE && m_parser) {
-        m_parser->restoreToTemplate();
-
-        // 恢复为配置视图（2列）
-        UnifiedQueryParser* queryParser = dynamic_cast<UnifiedQueryParser*>(m_parser);
-        if (queryParser) {
-            const HistoryReportConfig& config = queryParser->getConfig();
-            beginResetModel();
-            updateModelSize(config.columns.size(), 2);
-            endResetModel();
-
-            notifyDataChanged();
-
-            qDebug() << "统一查询已还原到配置阶段";
-            return;
-        }
-    }
-
+    // 重置所有公式为未计算状态
     for (auto it = m_cells.begin(); it != m_cells.end(); ++it) {
         CellData* cell = it.value();
         if (cell && cell->hasFormula) {
@@ -506,16 +522,103 @@ void ReportDataModel::restoreToTemplate()
         }
     }
 
+    // 清空快照
     m_lastSnapshot.bindingKeys.clear();
     m_lastSnapshot.formulaCells.clear();
     m_lastSnapshot.dataMarkerCells.clear();
     m_isFirstRefresh = true;
 
-    m_dirtyFormulas.clear();  // 新增：清空脏标记
+    m_dirtyFormulas.clear();
 
+    // 恢复编辑状态
+    if (m_parser) {
+        m_parser->setEditState(BaseReportParser::CONFIG_EDIT);
+    }
     setEditMode(true);
-    qDebug() << "已还原所有公式为未计算状态";
+
+    qDebug() << "模板模式已还原到配置状态";
     notifyDataChanged();
+}
+
+void ReportDataModel::restoreUnifiedQuery()
+{
+    qDebug() << "还原统一查询配置...";
+
+    // ===== 检查是否有用户添加的公式 =====
+    bool hasUserFormulas = false;
+    int formulaCount = 0;
+
+    for (int row = 0; row < m_maxRow; ++row) {
+        for (int col = m_dataColumnCount + 1; col < m_maxCol; ++col) {
+            const CellData* cell = getCell(row, col);
+            if (cell && cell->hasFormula) {
+                hasUserFormulas = true;
+                formulaCount++;
+            }
+        }
+    }
+
+    if (hasUserFormulas) {
+        qDebug() << QString("检测到 %1 个用户公式").arg(formulaCount);
+
+        // ===== 弹出警告对话框 =====
+        auto reply = QMessageBox::warning(nullptr, "确认还原配置",
+            QString("检测到您添加了 %1 个自定义公式/列。\n\n"
+                "还原配置将清除所有查询数据和自定义公式。\n\n"
+                "是否继续？").arg(formulaCount),
+            QMessageBox::Yes | QMessageBox::No,
+            QMessageBox::No);
+
+        if (reply == QMessageBox::No) {
+            qDebug() << "用户取消还原";
+            return;
+        }
+    }
+
+    // ===== 执行还原 =====
+    if (m_parser) {
+        m_parser->restoreToTemplate();
+    }
+
+    // 清除所有用户添加的单元格（包括公式列）
+    QList<QPoint> toRemove;
+    for (auto it = m_cells.constBegin(); it != m_cells.constEnd(); ++it) {
+        int col = it.key().y();
+        // 删除数据列之外的所有单元格
+        if (col > 1) {  // 配置阶段只有前2列
+            toRemove.append(it.key());
+        }
+    }
+
+    for (const QPoint& pos : toRemove) {
+        delete m_cells.take(pos);
+    }
+
+    // 恢复为配置视图（2列）
+    UnifiedQueryParser* queryParser = dynamic_cast<UnifiedQueryParser*>(m_parser);
+    if (queryParser) {
+        const HistoryReportConfig& config = queryParser->getConfig();
+        beginResetModel();
+        updateModelSize(config.columns.size(), 2);
+        m_dataColumnCount = 0;  // 清空数据列计数
+        endResetModel();
+
+        m_dirtyFormulas.clear();
+
+        qDebug() << "统一查询已还原到配置阶段";
+        notifyDataChanged();
+
+        QMessageBox::information(nullptr, "还原完成", "已还原到配置文件状态。");
+    }
+}
+void ReportDataModel::restoreToTemplate()
+{
+    if (m_currentMode == TEMPLATE_MODE) {
+        restoreTemplateReport();
+    }
+    else if (m_currentMode == UNIFIED_QUERY_MODE) {
+        restoreUnifiedQuery();
+    }
 }
 
 ReportDataModel::TemplateType ReportDataModel::getReportType() const {
@@ -927,26 +1030,16 @@ bool ReportDataModel::setData(const QModelIndex& index, const QVariant& value, i
 }
 
 
-Qt::ItemFlags ReportDataModel::flags(const QModelIndex& index) const
+Qt::ItemFlags ReportDataModel::getTemplateModeFlags(const QModelIndex& index) const
 {
     if (!index.isValid()) return Qt::NoItemFlags;
 
-    // ===== 统一查询模式处理 =====
-    if (m_currentMode == UNIFIED_QUERY_MODE) {
-        if (hasUnifiedQueryData()) {
-            // 报表阶段：只读
-            return Qt::ItemIsEnabled | Qt::ItemIsSelectable;
-        }
-        else {
-            // 配置阶段：可编辑（仅前2列）
-            if (index.column() < 2) {
-                return Qt::ItemIsEnabled | Qt::ItemIsSelectable | Qt::ItemIsEditable;
-            }
-            return Qt::ItemIsEnabled | Qt::ItemIsSelectable;
-        }
-    } 
+    // ===== 检查预查询状态 =====
+    if (m_parser && m_parser->getEditState() == BaseReportParser::PREFETCHING) {
+        // 预查询中：只读
+        return Qt::ItemIsEnabled | Qt::ItemIsSelectable;
+    }
 
-    // ===== 模板模式处理 =====
     // 运行模式下只读
     if (!m_editMode) {
         return Qt::ItemIsEnabled | Qt::ItemIsSelectable;
@@ -963,6 +1056,61 @@ Qt::ItemFlags ReportDataModel::flags(const QModelIndex& index) const
 
     return Qt::ItemIsEnabled | Qt::ItemIsSelectable | Qt::ItemIsEditable;
 }
+
+Qt::ItemFlags ReportDataModel::getUnifiedQueryModeFlags(const QModelIndex& index) const
+{
+    if (!index.isValid()) return Qt::NoItemFlags;
+
+    if (hasUnifiedQueryData()) {
+        // ===== 报表阶段：时间列和数据列只读，其他列可编辑 =====
+        int col = index.column();
+
+        // 第0列是时间列：只读
+        if (col == 0) {
+            return Qt::ItemIsEnabled | Qt::ItemIsSelectable;
+        }
+
+        // 第1~N列是数据列：只读（N = m_dataColumnCount）
+        if (col >= 1 && col <= m_dataColumnCount) {
+            return Qt::ItemIsEnabled | Qt::ItemIsSelectable;
+        }
+
+        // 第N+1列及以后：可编辑（用户自定义列，可以写公式）
+        // 但合并单元格的非主单元格除外
+        const CellData* cell = getCell(index.row(), index.column());
+        if (cell && cell->mergedRange.isMerged()) {
+            if (index.row() != cell->mergedRange.startRow ||
+                index.column() != cell->mergedRange.startCol) {
+                return Qt::ItemIsEnabled;
+            }
+        }
+
+        return Qt::ItemIsEnabled | Qt::ItemIsSelectable | Qt::ItemIsEditable;
+    }
+    else {
+        // ===== 配置阶段：仅前2列可编辑 =====
+        if (index.column() < 2) {
+            return Qt::ItemIsEnabled | Qt::ItemIsSelectable | Qt::ItemIsEditable;
+        }
+        return Qt::ItemIsEnabled | Qt::ItemIsSelectable;
+    }
+}
+
+Qt::ItemFlags ReportDataModel::flags(const QModelIndex& index) const
+{
+    if (!index.isValid()) return Qt::NoItemFlags;
+
+    // ===== 根据模式分发 =====
+    if (m_currentMode == TEMPLATE_MODE) {
+        return getTemplateModeFlags(index);
+    }
+    else if (m_currentMode == UNIFIED_QUERY_MODE) {
+        return getUnifiedQueryModeFlags(index);
+    }
+
+    return Qt::ItemIsEnabled | Qt::ItemIsSelectable;
+}
+
 
 // ===== 设置编辑模式 =====
 void ReportDataModel::setEditMode(bool editMode)
@@ -1234,9 +1382,9 @@ void ReportDataModel::clearAllCells()
     m_reportType = NORMAL_EXCEL;
     m_reportName.clear();
 
-    m_currentMode = TEMPLATE_MODE;
+    m_dataColumnCount = 0;  
 
-    // ===== 【新增】清空快照 =====
+    // 清空快照
     m_lastSnapshot.bindingKeys.clear();
     m_lastSnapshot.formulaCells.clear();
     m_lastSnapshot.dataMarkerCells.clear();
@@ -1614,6 +1762,7 @@ bool ReportDataModel::loadUnifiedQueryConfig(const QString& filePath)
     return true;
 }
 
+// ReportDataModel.cpp refreshUnifiedQuery()
 bool ReportDataModel::refreshUnifiedQuery(QProgressDialog* progress)
 {
     UnifiedQueryParser* queryParser = dynamic_cast<UnifiedQueryParser*>(m_parser);
@@ -1622,8 +1771,38 @@ bool ReportDataModel::refreshUnifiedQuery(QProgressDialog* progress)
         return false;
     }
 
-    // 检查时间配置（这里应该已经通过 setTimeRangeForQuery 设置过了）
-    if (queryParser->getQueryIntervalSeconds() == 0) {
+    // ===== 检测变化类型 =====
+    UnifiedQueryChangeType changeType = detectUnifiedQueryChanges();
+
+    if (changeType == UQ_FORMULA_ONLY) {
+        // 只有公式变化，只计算公式
+        qDebug() << "[统一查询] 仅增量计算公式";
+        recalculateAllFormulas();
+
+        QMessageBox::information(nullptr, "公式计算完成",
+            "新增公式已计算完成！\n\n"
+            "如需重新查询数据，请再次点击刷新。");
+        return true;
+    }
+
+    if (changeType == UQ_NO_CHANGE && hasUnifiedQueryData()) {
+        // 已有数据且无变化，直接返回成功（或者提示用户）
+        auto reply = QMessageBox::question(nullptr, "确认刷新",
+            "当前数据无变化。\n\n"
+            "是否重新查询数据？",
+            QMessageBox::Yes | QMessageBox::No,
+            QMessageBox::No);
+
+        if (reply == QMessageBox::No) {
+            return false;
+        }
+        // 用户选择 Yes，继续执行查询
+    }
+
+    // ===== 执行数据查询 =====
+    // 检查时间配置
+    if (queryParser->getQueryIntervalSeconds() == 0 &&
+        queryParser->getTimeAxis().isEmpty()) {
         qWarning() << "时间配置无效";
         return false;
     }
@@ -1653,21 +1832,36 @@ bool ReportDataModel::refreshUnifiedQuery(QProgressDialog* progress)
     int totalRows = timeAxis.size() + 1;  // +1 表头
     int totalCols = config.columns.size() + 1;  // +1 时间列
 
+    // ===== 保留用户自定义列 =====
+    int oldMaxCol = m_maxCol;
+    int userDefinedCols = oldMaxCol - m_dataColumnCount - 1;  // 用户添加的列数
+    if (userDefinedCols > 0) {
+        totalCols += userDefinedCols;
+        qDebug() << QString("保留 %1 个用户自定义列").arg(userDefinedCols);
+    }
+
+    m_dataColumnCount = config.columns.size();
+
     beginResetModel();
     updateModelSize(totalRows, totalCols);
     endResetModel();
+
+    // ===== 计算公式 =====
+    recalculateAllFormulas();
 
     if (progress) {
         progress->setValue(100);
     }
 
-    qDebug() << QString("统一查询完成：%1行 × %2列").arg(totalRows).arg(totalCols);
+    qDebug() << QString("统一查询完成：%1行 × %2列（数据列：%3）")
+        .arg(totalRows).arg(totalCols).arg(m_dataColumnCount);
 
     // 显示成功消息
     QMessageBox::information(nullptr, "查询成功",
         QString("数据查询完成！\n\n"
             "时间点：%1 个\n"
-            "数据列：%2 个")
+            "数据列：%2 个\n\n"
+            "提示：时间列和数据列为只读，您可以在右侧添加自定义列和公式。")
         .arg(timeAxis.size())
         .arg(config.columns.size()));
 
@@ -1705,7 +1899,53 @@ QVariant ReportDataModel::getUnifiedQueryCellData(const QModelIndex& index, int 
         }
     }
     else {
-        // 【报表阶段】显示虚拟数据
+        // 【报表阶段】
+
+        // ===== 优先检查是否有用户输入的单元格数据 =====
+        const CellData* cell = getCell(row, col);
+
+        // 如果是用户自定义列（col > m_dataColumnCount），优先显示用户数据
+        if (col > m_dataColumnCount && cell) {
+            if (role == Qt::DisplayRole) {
+                if (cell->hasFormula && cell->formulaCalculated) {
+                    // 显示公式计算结果
+                    return cell->value;
+                }
+                else if (cell->hasFormula && !cell->formulaCalculated) {
+                    // 显示公式文本
+                    return cell->formula;
+                }
+                else {
+                    // 显示普通值
+                    return cell->value;
+                }
+            }
+
+            if (role == Qt::EditRole) {
+                if (cell->hasFormula) {
+                    return cell->formula;  // 编辑时显示公式
+                }
+                return cell->value;
+            }
+
+            if (role == Qt::BackgroundRole) {
+                return QBrush(cell->style.backgroundColor);
+            }
+
+            if (role == Qt::ForegroundRole) {
+                return QBrush(cell->style.textColor);
+            }
+
+            if (role == Qt::FontRole) {
+                return ensureFontAvailable(cell->style.font);
+            }
+
+            if (role == Qt::TextAlignmentRole) {
+                return static_cast<int>(cell->style.alignment);
+            }
+        }
+
+        // ===== 否则显示查询数据（虚拟数据）=====
         if (role == Qt::DisplayRole || role == Qt::EditRole) {
             // 表头行
             if (row == 0) {
@@ -1746,6 +1986,12 @@ QVariant ReportDataModel::getUnifiedQueryCellData(const QModelIndex& index, int 
             if (row == 0) {
                 return QBrush(QColor(220, 220, 220));  // 表头灰色
             }
+
+            // ===== 用户自定义列使用不同背景色 =====
+            if (col > m_dataColumnCount) {
+                return (row % 2 == 0) ? QBrush(QColor(255, 255, 240)) : QBrush(QColor(250, 250, 235));
+            }
+
             return (row % 2 == 0) ? QBrush(Qt::white) : QBrush(QColor(248, 248, 248));
         }
 
@@ -1783,3 +2029,37 @@ void ReportDataModel::setTimeRangeForQuery(const TimeRangeConfig& config)
     }
 }
 
+void ReportDataModel::updateEditability()
+{
+    // 通知视图更新所有单元格的可编辑状态
+    emit dataChanged(index(0, 0), index(m_maxRow - 1, m_maxCol - 1));
+}
+
+ReportDataModel::UnifiedQueryChangeType ReportDataModel::detectUnifiedQueryChanges()
+{
+    if (!hasUnifiedQueryData()) {
+        // 还没查询过数据，肯定需要查询
+        return UQ_NEED_REQUERY;
+    }
+
+    // 检查是否有新增公式
+    bool hasNewFormulas = false;
+    for (int row = 0; row < m_maxRow; ++row) {
+        for (int col = m_dataColumnCount + 1; col < m_maxCol; ++col) {
+            const CellData* cell = getCell(row, col);
+            if (cell && cell->hasFormula && !cell->formulaCalculated) {
+                hasNewFormulas = true;
+                break;
+            }
+        }
+        if (hasNewFormulas) break;
+    }
+
+    if (hasNewFormulas) {
+        qDebug() << "[统一查询] 检测到新增公式";
+        return UQ_FORMULA_ONLY;
+    }
+
+    qDebug() << "[统一查询] 无变化";
+    return UQ_NO_CHANGE;
+}

@@ -73,51 +73,61 @@ bool UnifiedQueryParser::loadConfigFromCells()
 bool UnifiedQueryParser::executeQueries(QProgressDialog* progress)
 {
     if (m_config.columns.isEmpty()) {
-        QMessageBox::warning(nullptr, "错误", "配置未加载");
         return false;
     }
 
     if (!m_timeConfig.isValid()) {
-        QMessageBox::warning(nullptr, "错误", "时间范围未设置");
         return false;
     }
 
-    // 1. 生成时间轴
+    // ===== 阶段1：生成时间轴 =====
+    emit queryStageChanged("正在生成时间轴...");
     m_timeAxis = generateTimeAxis();
 
     if (progress) {
-        progress->setLabelText("正在查询数据...");
-        progress->setRange(0, 100);
         progress->setValue(10);
     }
 
-    // 2. 构造查询地址
+    if (m_timeAxis.isEmpty()) {
+        return false;
+    }
+
+    // ===== 阶段2：构造查询地址 =====
+    emit queryStageChanged("正在构造查询语句...");
     QString queryAddr = buildQueryAddress();
     qDebug() << "查询地址：" << queryAddr;
 
-    if (progress) progress->setValue(20);
+    if (progress) {
+        progress->setValue(20);
+    }
 
-    // 3. 执行查询
+    // ===== 阶段3：执行数据库查询 =====
+    emit queryStageChanged(QString("正在查询数据库（%1 个RTU）...").arg(m_config.columns.size()));
+
     std::map<int64_t, std::vector<float>> rawData;
     try {
         rawData = m_fetcher->fetchDataFromAddress(queryAddr.toStdString());
     }
     catch (const std::exception& e) {
-        QMessageBox::critical(nullptr, "查询失败", QString("数据库错误：%1").arg(e.what()));
+        qWarning() << "查询失败：" << e.what();
         return false;
     }
 
-    if (progress) progress->setValue(60);
+    if (progress) {
+        progress->setValue(60);
+    }
 
     if (rawData.empty()) {
-        QMessageBox::warning(nullptr, "无数据", "查询未返回任何数据");
         return false;
     }
 
-    // 4. 数据对齐
+    // ===== 阶段4：数据对齐 =====
+    emit queryStageChanged(QString("正在对齐数据（%1 个时间点）...").arg(m_timeAxis.size()));
     m_alignedData = alignData(rawData);
 
-    if (progress) progress->setValue(100);
+    if (progress) {
+        progress->setValue(100);
+    }
 
     qDebug() << "查询完成";
     return true;

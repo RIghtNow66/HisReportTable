@@ -59,6 +59,9 @@ bool MonthReportParser::scanAndParse()
         return true;
     }
 
+    setEditState(PREFETCHING);
+    m_model->updateEditability();
+
     // 启动后台预查询
     qDebug() << "========== 开始后台预查询 ==========";
     m_isPrefetching = true;

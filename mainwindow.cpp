@@ -769,19 +769,36 @@ void MainWindow::onRefreshData()
 
     // ===== 统一查询模式：弹出时间选择框 =====
     if (m_dataModel->isUnifiedQueryMode()) {
-        // 创建时间设置对话框（如果还未创建）
+        qDebug() << "进入统一查询刷新流程";
+
+        // ===== 检测变化类型 =====
+        ReportDataModel::UnifiedQueryChangeType changeType = m_dataModel->detectUnifiedQueryChanges();
+
+        auto reply = QMessageBox::question(
+            this,
+            "检测到新增公式",
+            "检测到新增公式，但数据未变化。\n\n"
+            "请选择操作：\n"
+            "• 计算公式：仅计算新增公式，不重新查询数据\n"
+            "• 重新查询：重新选择时间范围并查询数据\n\n"
+            "建议：如果只是添加了计算列，选择\"计算公式\"即可。",
+            QMessageBox::Yes | QMessageBox::No | QMessageBox::Cancel,
+            QMessageBox::Yes
+        );
+
+        // ===== 弹出时间选择窗口 =====
         if (!m_timeSettingsDialog) {
             m_timeSettingsDialog = new TimeSettingsDialog(this);
         }
 
-        // 设置默认值（日报模式，今天0点开始）
+        // 设置默认值
         QDateTime now = QDateTime::currentDateTime();
         m_timeSettingsDialog->setStartTime(QDateTime(now.date(), QTime(0, 0, 0)));
         m_timeSettingsDialog->setReportType(TimeSettingsDialog::Daily);
 
         // 显示对话框
         if (m_timeSettingsDialog->exec() != QDialog::Accepted) {
-            // 用户取消了
+            qDebug() << "用户取消了时间选择";
             return;
         }
 
@@ -790,6 +807,11 @@ void MainWindow::onRefreshData()
         config.startTime = m_timeSettingsDialog->getStartTime();
         config.endTime = m_timeSettingsDialog->getEndTime();
         config.intervalSeconds = m_timeSettingsDialog->getIntervalSeconds();
+
+        qDebug() << QString("时间配置：%1 ~ %2, 间隔%3秒")
+            .arg(config.startTime.toString())
+            .arg(config.endTime.toString())
+            .arg(config.intervalSeconds);
 
         // 验证配置
         if (!config.isValid()) {
@@ -837,7 +859,7 @@ void MainWindow::onRefreshData()
             return;
         }
 
-        // 1. 创建进度对话框
+        // 创建进度对话框
         QProgressDialog progress("正在准备数据...", "取消", 0, 0, this);
         progress.setWindowModality(Qt::WindowModal);
         progress.setMinimumDuration(500);
@@ -888,6 +910,19 @@ void MainWindow::onRestoreConfig()
         return;
     }
 
+    // ===== 统一查询模式：特殊处理 =====
+    if (m_dataModel->isUnifiedQueryMode()) {
+        if (!m_dataModel->hasUnifiedQueryData()) {
+            QMessageBox::information(this, "提示", "当前已经是配置文件状态，无需还原。");
+            return;
+        }
+
+        // 执行还原（内部会检测公式并提醒）
+        m_dataModel->restoreToTemplate();
+        return;
+    }
+
+    // ===== 模板模式：保持原有逻辑 =====
     if (m_dataModel->isFirstRefresh() && !m_dataModel->hasExecutedQueries()) {
         QMessageBox::information(this, "提示", "当前已经是配置文件状态，无需还原。");
         return;
@@ -895,11 +930,11 @@ void MainWindow::onRestoreConfig()
 
     // 弹出确认对话框
     QMessageBox::StandardButton reply;
-    reply = QMessageBox::question(this, "确认", "是否要将报表还原到模板的初始状态？\n\n所有已填充的数据和计算结果都将被清除。",
+    reply = QMessageBox::question(this, "确认",
+        "是否要将报表还原到模板的初始状态？\n\n所有已填充的数据和计算结果都将被清除。",
         QMessageBox::Yes | QMessageBox::No);
 
     if (reply == QMessageBox::Yes) {
-        // 调用数据模型的还原函数
         m_dataModel->restoreToTemplate();
         QMessageBox::information(this, "完成", "配置已成功还原。");
     }

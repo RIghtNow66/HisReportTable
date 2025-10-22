@@ -56,6 +56,13 @@ public:
         EXPORT_TEMPLATE
     };
 
+    enum UnifiedQueryChangeType {
+        UQ_NO_CHANGE,
+        UQ_FORMULA_ONLY,
+        UQ_NEED_REQUERY
+    };
+
+public:
     // ===== 模式管理接口 =====
     ReportMode currentMode() const { return m_currentMode; }
     bool isUnifiedQueryMode() const { return m_currentMode == UNIFIED_QUERY_MODE; }
@@ -133,31 +140,14 @@ public:
     void markFormulaDirty(int row, int col);
     void markDependentFormulasDirty(int changedRow, int changedCol);
 
+    void updateEditability();  // 更新可编辑状态
+    int getDataColumnCount() const { return m_dataColumnCount; }  // 获取数据列数
+
+    UnifiedQueryChangeType detectUnifiedQueryChanges();
+
 signals:
     void cellChanged(int row, int col);
     void editModeChanged(bool editMode);
-
-private:
-    // ===== 模式分发函数 =====
-    QVariant getTemplateCellData(const QModelIndex& index, int role) const;
-    QVariant getUnifiedQueryCellData(const QModelIndex& index, int role) const;  // 修改：实现
-
-    bool refreshTemplateReport(QProgressDialog* progress);
-
-    // ===== 统一查询辅助函数 =====
-    bool loadUnifiedQueryConfig(const QString& filePath);  // 修改：实现
-    bool refreshUnifiedQuery(QProgressDialog* progress);   // 修改：实现
-
-    bool loadFromExcelFile(const QString& fileName);
-
-    QSet<QString> getCurrentBindings() const;
-    QSet<QPoint> getCurrentFormulas() const;
-    QList<QString> getNewBindings() const;
-
-    // ===== 公式依赖检查 =====
-    bool checkFormulaDependenciesReady(int row, int col);
-    QPoint parseCellReference(const QString& cellRef) const;
-    bool detectCircularDependency(int row, int col, QSet<QPoint>& visitedCells);
 
 private:
     QHash<QPoint, CellData*> m_cells;
@@ -190,6 +180,37 @@ private:
     // ===== 模式管理变量 =====
     ReportMode m_currentMode;
     TemplateType m_templateType;
+
+    int m_dataColumnCount = 0;  // 新增：记录统一查询模式下数据列数
+
+private:
+    // ===== 模式分发函数 =====
+    QVariant getTemplateCellData(const QModelIndex& index, int role) const;
+    QVariant getUnifiedQueryCellData(const QModelIndex& index, int role) const;  // 修改：实现
+
+    bool refreshTemplateReport(QProgressDialog* progress);
+
+    // ===== 统一查询辅助函数 =====
+    bool loadUnifiedQueryConfig(const QString& filePath);  // 修改：实现
+    bool refreshUnifiedQuery(QProgressDialog* progress);   // 修改：实现
+
+    bool loadFromExcelFile(const QString& fileName);
+
+    QSet<QString> getCurrentBindings() const;
+    QSet<QPoint> getCurrentFormulas() const;
+    QList<QString> getNewBindings() const;
+
+    // ===== 公式依赖检查 =====
+    bool checkFormulaDependenciesReady(int row, int col);
+    QPoint parseCellReference(const QString& cellRef) const;
+    bool detectCircularDependency(int row, int col, QSet<QPoint>& visitedCells);
+
+    Qt::ItemFlags getTemplateModeFlags(const QModelIndex& index) const;
+    Qt::ItemFlags getUnifiedQueryModeFlags(const QModelIndex& index) const;
+
+    void restoreTemplateReport();  // 拆分：模板模式还原
+    void restoreUnifiedQuery();    // 拆分：统一查询还原
+
 };
 
 #endif // REPORTDATAMODEL_H

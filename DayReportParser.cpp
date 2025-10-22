@@ -52,6 +52,9 @@ bool DayReportParser::scanAndParse()
 
     qDebug() << "解析完成：找到" << m_queryTasks.size() << "个数据点";
 
+    setEditState(PREFETCHING);
+    m_model->updateEditability();  // 通知 Model 更新可编辑状态
+
     // 启动后台预查询
     qDebug() << "========== 开始后台预查询 ==========";
     m_isPrefetching = true;
