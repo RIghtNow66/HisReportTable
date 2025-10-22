@@ -24,11 +24,26 @@ class DayReportParser;
 class FormulaEngine;
 class QProgressDialog;
 
+struct HistoryReportConfig;
+struct TimeRangeConfig;
+
 class ReportDataModel : public QAbstractTableModel
 {
     Q_OBJECT
 
 public:
+    // ===== 报表模式枚举 =====
+    enum ReportMode {
+        TEMPLATE_MODE,        // 模板驱动模式（原版本2）
+        UNIFIED_QUERY_MODE    // 统一查询模式（原版本1）
+    };
+
+    // ===== 模板类型枚举（仅在 TEMPLATE_MODE 下有效）=====
+    enum TemplateType {
+        DAY_REPORT,
+        MONTH_REPORT
+    };
+
     enum ChangeType {
         NO_CHANGE,           // 无变化
         FORMULA_ONLY,        // 只有公式变化
@@ -40,6 +55,16 @@ public:
         EXPORT_DATA,
         EXPORT_TEMPLATE
     };
+
+    // ===== 模式管理接口 =====
+    ReportMode currentMode() const { return m_currentMode; }
+    bool isUnifiedQueryMode() const { return m_currentMode == UNIFIED_QUERY_MODE; }
+
+    // ===== 统一查询模式接口 =====
+    bool loadUnifiedQueryConfig(const QString& filePath);
+    bool refreshUnifiedQuery(QProgressDialog* progress);
+    bool exportConfigFile(const QString& fileName);
+    bool hasHistoryData() const { return !m_timeAxis.isEmpty(); }
 
     ChangeType detectChanges();  // 检测变化类型
     void saveRefreshSnapshot();  // 保存刷新快照
@@ -127,6 +152,25 @@ signals:
     void editModeChanged(bool editMode);
 
 private:
+    // ===== 模式分发函数 =====
+    QVariant getTemplateCellData(const QModelIndex& index, int role) const;
+    QVariant getUnifiedQueryCellData(const QModelIndex& index, int role) const;
+
+    bool refreshTemplateReport(QProgressDialog* progress);  // 将原有逻辑封装到这里
+
+    // ===== 统一查询模式辅助函数 =====
+    QString buildQueryAddress(const QString& rtuId, const TimeRangeConfig& config);
+    QStringList extractRtuListFromConfig() const;
+    void generateHistoryReport(const HistoryReportConfig& config,
+        const QHash<QString, QVector<double>>& alignedData,
+        const QVector<QDateTime>& timeAxis);
+
+    // ===== 静态工具函数 =====
+    static QVector<QDateTime> generateTimeAxis(const TimeRangeConfig& config);
+    static QHash<QString, QVector<double>> alignDataWithInterpolation(
+        const QHash<QString, std::map<int64_t, std::vector<float>>>& rawData,
+        const QVector<QDateTime>& timeAxis);
+
     bool loadFromExcelFile(const QString& fileName);
 
     QSet<QString> getCurrentBindings() const;     // 获取当前所有绑定标记
@@ -169,6 +213,16 @@ private:
 
     // 需要重新计算的公式单元格
     QSet<QPoint> m_dirtyFormulas;
+
+    // ===== 模式管理变量 =====
+    ReportMode m_currentMode;
+    TemplateType m_templateType;  // 仅在 TEMPLATE_MODE 下有效
+
+    // ===== 统一查询模式变量 =====
+    HistoryReportConfig m_queryConfig;           // 报表配置
+    QVector<QDateTime> m_timeAxis;               // 完整时间轴
+    QHash<QString, QVector<double>> m_alignedData;  // 对齐后的数据
+    bool m_configModified;                       // 配置是否被修改（用于保存提示）
 
 };
 

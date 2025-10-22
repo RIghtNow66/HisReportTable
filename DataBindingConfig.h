@@ -156,19 +156,31 @@ struct CellData {
     }
 };
 
-// ===== 时间范围配置（保留用于可能的扩展）=====
+struct ReportColumnConfig {
+    QString displayName;  // 显示名称
+    QString rtuId;        // RTU号
+    int sourceRow;        // 源文件行号（可选）
+
+    ReportColumnConfig() : sourceRow(-1) {}
+};
+
+struct HistoryReportConfig {
+    QString reportName;                    // 报表名称
+    QString configFilePath;                // 配置文件路径
+    QList<ReportColumnConfig> columns;     // 列配置列表
+    QSet<int> dataColumns;                 // 数据列索引集合（用于标记只读列）
+};
+
 struct TimeRangeConfig {
     QDateTime startTime;
     QDateTime endTime;
     int intervalSeconds;
 
-    TimeRangeConfig()
-        : intervalSeconds(0)
-    {
-    }
-
     bool isValid() const {
-        return startTime.isValid() && endTime.isValid() && intervalSeconds >= 0;
+        return startTime.isValid() &&
+            endTime.isValid() &&
+            intervalSeconds >= 0 &&
+            startTime <= endTime;
     }
 };
 
@@ -176,5 +188,8 @@ struct TimeRangeConfig {
 struct GlobalDataConfig {
     TimeRangeConfig globalTimeRange;
 };
+
+
+
 
 #endif // DATABINDINGCONFIG_H

@@ -48,7 +48,8 @@ SOURCES += \
     TaosDataFetcher.cpp \
     DayReportParser.cpp \
     BaseReportParser.cpp \
-    MonthReportParser.cpp
+    MonthReportParser.cpp\
+	TimeSettingsDialog.cpp\
 
 # ============ 头文件 ============
 HEADERS += \
@@ -61,7 +62,8 @@ HEADERS += \
     TaosDataFetcher.h \
     DayReportParser.h \
     BaseReportParser.h \
-    MonthReportParser.h
+    MonthReportParser.h\
+	TimeSettingsDialog.h\
 
 # ============ 资源文件 ============
 RESOURCES += ReportTable.qrc
