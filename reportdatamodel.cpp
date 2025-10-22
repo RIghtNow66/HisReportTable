@@ -96,9 +96,10 @@ bool ReportDataModel::loadReportTemplate(const QString& fileName)
         }
 
         // 连接预查询完成信号
-        connect(m_parser, &BaseReportParser::prefetchCompleted,
-            this, [this](bool hasData, int dataCount, int successCount, int totalCount) {
-                // 预查询完成后的处理在 MainWindow 中
+        connect(m_parser, &BaseReportParser::asyncTaskCompleted,
+            this, [this](bool success, const QString& message) {
+                // 这个信号现在由 MainWindow 处理，这里可以留空或移除
+                qDebug() << "ReportDataModel 收到日报预查询完成信号: " << success << message;
             }, Qt::QueuedConnection);
 
         setEditMode(true);
@@ -120,9 +121,10 @@ bool ReportDataModel::loadReportTemplate(const QString& fileName)
         }
 
         // 连接预查询完成信号
-        connect(m_parser, &BaseReportParser::prefetchCompleted,
-            this, [this](bool hasData, int dataCount, int successCount, int totalCount) {
-                // 预查询完成后的处理在 MainWindow 中
+        connect(m_parser, &BaseReportParser::asyncTaskCompleted,
+            this, [this](bool success, const QString& message) {
+                // 这个信号现在由 MainWindow 处理，这里可以留空或移除
+                qDebug() << "ReportDataModel 收到月报预查询完成信号: " << success << message;
             }, Qt::QueuedConnection);
 
         setEditMode(true);
@@ -1634,7 +1636,7 @@ bool ReportDataModel::refreshUnifiedQuery(QProgressDialog* progress)
     }
 
     // ===== 启动异步查询 =====
-    queryParser->startAsyncQuery();
+    queryParser->startAsyncTask();
 
     // 立即返回，不等待查询完成
     return true;

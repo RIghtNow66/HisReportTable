@@ -64,22 +64,7 @@ bool MonthReportParser::scanAndParse()
 
     // 启动后台预查询
     qDebug() << "========== 开始后台预查询 ==========";
-    m_isPrefetching = true;
-
-    m_prefetchFuture = QtConcurrent::run([this]() -> bool {
-        qDebug() << "[后台线程] 月报预查询开始...";
-        try {
-            bool result = this->analyzeAndPrefetch();  // 这里会调用 identifyTimeBlocks()
-            qDebug() << "[后台线程] 月报预查询" << (result ? "成功" : "失败");
-            return result;
-        }
-        catch (const std::exception& e) {
-            qWarning() << "[后台线程] 异常：" << e.what();
-            return false;
-        }
-        });
-
-    m_prefetchWatcher->setFuture(m_prefetchFuture);
+    startAsyncTask(); // 调用基类方法启动后台任务
 
     QString msg = QString("解析成功：找到 %1 个数据点，数据加载中...")
         .arg(m_queryTasks.size());
@@ -89,7 +74,12 @@ bool MonthReportParser::scanAndParse()
     return true;
 }
 
-
+bool MonthReportParser::runAsyncTask()
+{
+    qDebug() << "[后台线程] 日报预查询开始...";
+    // analyzeAndPrefetch 包含了取消检查
+    return this->analyzeAndPrefetch();
+}
 
 bool MonthReportParser::findDateMarker()
 {
@@ -575,7 +565,8 @@ bool MonthReportParser::analyzeAndPrefetch()
     // 1. 识别时间块
     QList<TimeBlock> blocks = identifyTimeBlocks();
 
-    if (m_stopRequested.loadAcquire()) {
+    // 使用基类中定义的 m_cancelRequested
+    if (m_cancelRequested.loadAcquire()) {
         m_lastPrefetchSuccessCount = 0;
         m_lastPrefetchTotalCount = 0;
         return false;
@@ -601,7 +592,8 @@ bool MonthReportParser::analyzeAndPrefetch()
     int intervalSeconds = getQueryIntervalSeconds();
 
     for (int i = 0; i < blocks.size(); ++i) {
-        if (m_stopRequested.loadAcquire()) {
+        // 使用基类中定义的 m_cancelRequested
+        if (m_cancelRequested.loadAcquire()) {
             qDebug() << "后台查询被中断";
             m_lastPrefetchSuccessCount = successCount;
             m_lastPrefetchTotalCount = blocks.size();
@@ -616,7 +608,8 @@ bool MonthReportParser::analyzeAndPrefetch()
             .arg(block.startDate)
             .arg(block.startTime.toString("HH:mm"));
 
-        emit prefetchProgress(i + 1, blocks.size());
+        // 使用基类中定义的统一进度信号 taskProgress
+        emit taskProgress(i + 1, blocks.size());
 
         // 在每次查询前，更新当前查询的日期范围
         m_currentQueryStartDate = block.startDate;

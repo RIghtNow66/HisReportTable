@@ -17,74 +17,87 @@ BaseReportParser::BaseReportParser(ReportDataModel* model, QObject* parent)
     , m_model(model)
     , m_fetcher(new TaosDataFetcher())
     , m_dateFound(false)
-    , m_prefetchWatcher(nullptr)
-    , m_isPrefetching(false)
-    , m_stopRequested(0)
+    , m_taskWatcher(nullptr) 
+    , m_isTaskRunning(false) 
+    , m_cancelRequested(0)  
     , m_lastPrefetchSuccessCount(0)  
     , m_lastPrefetchTotalCount(0)
     , m_cacheTimestamp()
     , m_editState(CONFIG_EDIT)
 {
     // 创建 FutureWatcher
-    m_prefetchWatcher = new QFutureWatcher<bool>(this);
+    m_taskWatcher = new QFutureWatcher<bool>(this);
 
     // 连接完成信号
-    connect(m_prefetchWatcher, &QFutureWatcher<bool>::finished,
-        this, &BaseReportParser::onPrefetchFinished);
+    connect(m_taskWatcher, &QFutureWatcher<bool>::finished,
+        this, &BaseReportParser::onAsyncTaskFinished);
 }
 
 BaseReportParser::~BaseReportParser()
 {
-    if (m_prefetchWatcher) {
-        disconnect(m_prefetchWatcher, nullptr, this, nullptr);
-    }
-
-    if (m_isPrefetching) {
-        qDebug() << "请求停止预查询...";
-        m_stopRequested.storeRelease(1);
-
-        if (!m_prefetchFuture.isFinished()) {
-            qDebug() << "等待后台线程退出（最多3秒）...";
-
-            // 修改：使用 waitForFinished 替代事件循环
-            m_prefetchFuture.waitForFinished();
-        }
+    if (m_isTaskRunning) {
+        qDebug() << "析构函数：请求停止后台任务...";
+        requestCancel();
+        // 使用 waitForFinished 确保线程优雅退出
+        m_taskFuture.waitForFinished();
+        qDebug() << "析构函数：后台任务已停止。";
     }
     delete m_fetcher;
 }
 
-void BaseReportParser::onPrefetchFinished()
+void BaseReportParser::startAsyncTask()
 {
-    m_isPrefetching = false;
+    if (m_isTaskRunning) {
+        qWarning() << "任务已在进行中，无法重复启动。";
+        return;
+    }
 
-    bool success = m_prefetchFuture.result();
+    m_isTaskRunning = true;
+    m_cancelRequested.storeRelease(0);
 
-    QMutexLocker locker(&m_cacheMutex);
-    int dataCount = m_dataCache.size();
-    locker.unlock();
+    // 使用 QtConcurrent::run 启动后台任务
+    m_taskFuture = QtConcurrent::run([this]() -> bool {
+        try {
+            // runAsyncTask 是一个虚函数，由子类实现具体任务
+            return this->runAsyncTask();
+        }
+        catch (const std::exception& e) {
+            qWarning() << "[后台线程] 发生未捕获的异常：" << e.what();
+            // ** [修改] 统一异常处理 **
+            emit databaseError(QString("后台任务异常: %1").arg(e.what()));
+            return false;
+        }
+        });
 
-    // 获取统计信息
-    int successCount = m_lastPrefetchSuccessCount;
-    int totalCount = m_lastPrefetchTotalCount;
+    m_taskWatcher->setFuture(m_taskFuture);
+}
 
-    setEditState(CONFIG_EDIT);
-    m_model->updateEditability();
+void BaseReportParser::onAsyncTaskFinished()
+{
+    m_isTaskRunning = false;
+    bool success = m_taskFuture.result();
 
-    if (dataCount > 0) {
-        qDebug() << QString("预查询完成：已缓存 %1 个数据点（成功 %2/%3）")
-            .arg(dataCount).arg(successCount).arg(totalCount);
-        emit prefetchCompleted(true, dataCount, successCount, totalCount);
+    QString message;
+    if (m_cancelRequested.loadAcquire()) {
+        message = "操作已取消。";
+        success = false; // 取消被视为不成功
+    }
+    else if (success) {
+        message = "后台任务成功完成。";
     }
     else {
-        qWarning() << QString("预查询失败：无数据（成功 %1/%2）")
-            .arg(successCount).arg(totalCount);
-        emit prefetchCompleted(false, 0, successCount, totalCount);
+        message = "后台任务执行失败。";
     }
 
-    // 重置统计信息
-    m_lastPrefetchSuccessCount = 0;
-    m_lastPrefetchTotalCount = 0;
+    // 发射统一的完成信号
+    emit asyncTaskCompleted(success, message);
+}
 
+void BaseReportParser::requestCancel()
+{
+    if (m_isTaskRunning) {
+        m_cancelRequested.storeRelease(1);
+    }
 }
 
 void BaseReportParser::clearCache()
@@ -327,7 +340,7 @@ bool BaseReportParser::analyzeAndPrefetch()
     // 1. 识别时间块
     QList<TimeBlock> blocks = identifyTimeBlocks();
 
-    if (m_stopRequested.loadAcquire()) return false;
+    if (m_cancelRequested.loadAcquire()) return false;
 
     if (blocks.isEmpty()) {
         qWarning() << "未识别到有效时间块";
@@ -374,9 +387,8 @@ bool BaseReportParser::analyzeAndPrefetch()
     int intervalSeconds = getQueryIntervalSeconds();
 
     for (int i = 0; i < mergedBlocks.size(); ++i) {
-        if (m_stopRequested.loadAcquire()) {
+        if (m_cancelRequested.loadAcquire()) {
             qDebug() << "后台查询被中断";
-            // 记录统计信息
             m_lastPrefetchSuccessCount = successCount;
             m_lastPrefetchTotalCount = mergedBlocks.size();
             return false;
@@ -401,7 +413,7 @@ bool BaseReportParser::analyzeAndPrefetch()
         }
 
 
-        emit prefetchProgress(i + 1, mergedBlocks.size());
+        emit taskProgress(i + 1, mergedBlocks.size());
 
         bool success = executeSingleQuery(rtuList,
             block.startTime,

@@ -8,20 +8,13 @@
 
 UnifiedQueryParser::UnifiedQueryParser(ReportDataModel* model, QObject* parent)
     : BaseReportParser(model, parent)
-    , m_queryWatcher(new QFutureWatcher<bool>(this))
-    , m_cancelRequested(0)
-    , m_isQuerying(false)
 {
-    connect(m_queryWatcher, &QFutureWatcher<bool>::finished,
-        this, &UnifiedQueryParser::onQueryFinished);
+
 }
 
 UnifiedQueryParser::~UnifiedQueryParser()
 {
-    if (m_isQuerying) {
-        m_cancelRequested.storeRelease(1);
-        m_queryFuture.waitForFinished();
-    }
+
 }
 
 void UnifiedQueryParser::setTimeRange(const TimeRangeConfig& config)
@@ -84,123 +77,92 @@ bool UnifiedQueryParser::loadConfigFromCells()
     return true;
 }
 
-void UnifiedQueryParser::requestCancel()
+const QVector<QDateTime>& UnifiedQueryParser::getTimeAxis() const
 {
-    m_cancelRequested.storeRelease(1);
-    qDebug() << "统一查询收到取消请求";
+    QMutexLocker locker(&m_dataMutex);
+    return m_timeAxis;
 }
 
-void UnifiedQueryParser::onQueryFinished()
+const QHash<QString, QVector<double>>& UnifiedQueryParser::getAlignedData() const
 {
-    m_isQuerying = false;
-    bool success = m_queryFuture.result();
-
-    QString message;
-    if (m_cancelRequested.loadAcquire()) {
-        message = "查询已取消";
-        emit queryCompletedWithStatus(false, message);
-    }
-    else if (success) {
-        message = QString("查询成功：%1行数据").arg(m_timeAxis.size());
-        emit queryCompletedWithStatus(true, message);
-    }
-    else {
-        message = "查询失败，请检查数据库连接";
-        emit queryCompletedWithStatus(false, message);
-    }
+    QMutexLocker locker(&m_dataMutex);
+    return m_alignedData;
 }
 
-void UnifiedQueryParser::startAsyncQuery()
+bool UnifiedQueryParser::runAsyncTask()
 {
-    if (m_isQuerying) {
-        qWarning() << "查询已在进行中";
-        return;
-    }
-
-    m_isQuerying = true;
-    m_cancelRequested.storeRelease(0);
-
-    m_queryFuture = QtConcurrent::run([this]() -> bool {
-        try {
-            return this->executeQueriesInternal();
-        }
-        catch (const std::exception& e) {
-            qWarning() << "查询异常：" << e.what();
-            return false;
-        }
-        });
-
-    m_queryWatcher->setFuture(m_queryFuture);
-}
-
-bool UnifiedQueryParser::executeQueriesInternal()
-{
-    // 把原 executeQueries() 的所有代码复制到这里
-    // 删除所有 progress 相关代码
-    // 添加取消检查
-
-    if (m_cancelRequested.loadAcquire()) return false;
-
-    emit queryStageChanged("正在生成时间轴...");
-    m_timeAxis = generateTimeAxis();
-
+    // 检查取消请求
     if (m_cancelRequested.loadAcquire()) return false;
 
     if (m_config.columns.isEmpty()) {
+        qWarning() << "配置为空，查询终止。";
         return false;
     }
 
     if (!m_timeConfig.isValid()) {
+        qWarning() << "时间配置无效，查询终止。";
         return false;
     }
 
-    // ===== 阶段1：生成时间轴 =====
-    emit queryStageChanged("正在生成时间轴...");
-    m_timeAxis = generateTimeAxis();
-
-
-    if (m_timeAxis.isEmpty()) {
-        return false;
-    }
-
-    // ===== 阶段2：构造查询地址 =====
-    emit queryStageChanged("正在构造查询语句...");
-    QString queryAddr = buildQueryAddress();
-    qDebug() << "查询地址：" << queryAddr;
-
-    // ===== 阶段3：执行数据库查询 =====
-    emit queryStageChanged(QString("正在查询数据库（%1 个RTU）...").arg(m_config.columns.size()));
-
-    std::map<int64_t, std::vector<float>> rawData;
     try {
-        rawData = m_fetcher->fetchDataFromAddress(queryAddr.toStdString());
+        // ===== 阶段1：生成时间轴 =====
+        emit queryStageChanged("正在生成时间轴...");
+        QVector<QDateTime> timeAxis = generateTimeAxis();
+        if (timeAxis.isEmpty()) {
+            qWarning() << "生成时间轴失败。";
+            return false;
+        }
+
+        if (m_cancelRequested.loadAcquire()) return false;
+
+        // ===== 阶段2：构造查询地址 =====
+        emit queryStageChanged("正在构造查询语句...");
+        QString queryAddr = buildQueryAddress();
+        qDebug() << "查询地址：" << queryAddr;
+
+        if (m_cancelRequested.loadAcquire()) return false;
+
+        // ===== 阶段3：执行数据库查询 =====
+        emit queryStageChanged(QString("正在查询数据库(%1 个RTU)...").arg(m_config.columns.size()));
+        std::map<int64_t, std::vector<float>> rawData = m_fetcher->fetchDataFromAddress(queryAddr.toStdString());
+
+        if (rawData.empty()) {
+            qWarning() << "数据库未返回任何数据。";
+            // 即使没数据，也认为是“成功”完成了查询，只是结果为空
+        }
+
+        if (m_cancelRequested.loadAcquire()) return false;
+
+        // ===== 阶段4：数据对齐 =====
+        emit queryStageChanged(QString("正在对齐数据(%1 个时间点)...").arg(timeAxis.size()));
+        QHash<QString, QVector<double>> alignedData = alignData(rawData);
+
+        // ===== 阶段5：安全地更新成员变量 =====
+        {
+            QMutexLocker locker(&m_dataMutex);
+            m_timeAxis = timeAxis;
+            m_alignedData = alignedData;
+        }
+
+        qDebug() << "后台查询任务完成。";
+        return true;
+
     }
     catch (const std::exception& e) {
-        qWarning() << "查询失败：" << e.what();
+        // ** [修改] 统一异常处理 **
+        qWarning() << "查询执行失败：" << e.what();
+        emit databaseError(QString("数据查询失败: %1").arg(e.what()));
         return false;
     }
-
-
-    if (rawData.empty()) {
-        return false;
-    }
-
-    // ===== 阶段4：数据对齐 =====
-    emit queryStageChanged(QString("正在对齐数据（%1 个时间点）...").arg(m_timeAxis.size()));
-    m_alignedData = alignData(rawData);
-
-
-    qDebug() << "查询完成";
-    return true;
-
 }
+
 
 bool UnifiedQueryParser::executeQueries(QProgressDialog* progress)
 {
-    // 保持接口不变，但标记为废弃（同步调用）
     Q_UNUSED(progress)
-        qWarning() << "同步查询已废弃，请使用 startAsyncQuery()";
-    return executeQueriesInternal();
+        qWarning() << "同步查询已废弃，请使用基类的 startAsyncTask()";
+    // 直接返回 false，强制使用异步
+    return false;
 }
 
 void UnifiedQueryParser::restoreToTemplate()
@@ -266,25 +228,45 @@ QVector<QDateTime> UnifiedQueryParser::generateTimeAxis()
 QHash<QString, QVector<double>> UnifiedQueryParser::alignData(
     const std::map<int64_t, std::vector<float>>& rawData)
 {
-    // 【直接复用版本1的 ReportDataModel::alignDataWithInterpolation】
-    // 注意：这里简化了参数，因为 RTU 顺序已经在 m_config.columns 中确定
-
     QHash<QString, QVector<double>> result;
     QStringList rtuList;
-
-    // 初始化结果容器
-    for (const auto& col : m_config.columns) {
-        rtuList.append(col.rtuId);
-        result[col.rtuId] = QVector<double>(m_timeAxis.size(), std::numeric_limits<double>::quiet_NaN());
-    }
-
-    // 容错匹配的时间窗口（间隔的一半）
-    int64_t tolerance = (int64_t)(m_timeConfig.intervalSeconds * 1000) / 2;
     int matchCount = 0;
 
-    // 对齐数据
-    for (int i = 0; i < m_timeAxis.size(); ++i) {
-        int64_t targetTime = m_timeAxis[i].toMSecsSinceEpoch();
+    QVector<QDateTime> localTimeAxis;
+    int64_t tolerance = 0;
+
+    // 使用锁安全地从成员变量获取所需配置，并复制到局部变量，以尽快释放锁
+    {
+        QMutexLocker locker(&m_dataMutex);
+        localTimeAxis = m_timeAxis;
+
+        for (const auto& col : m_config.columns) {
+            rtuList.append(col.rtuId);
+            result[col.rtuId] = QVector<double>(localTimeAxis.size(), std::numeric_limits<double>::quiet_NaN());
+        }
+
+        tolerance = (int64_t)(m_timeConfig.intervalSeconds * 1000) / 2;
+
+        // 为单点查询设置一个默认的5秒容错窗口
+        if (tolerance == 0) {
+            tolerance = 5000;
+        }
+    }
+
+    // 遍历时间轴，对齐数据
+    for (int i = 0; i < localTimeAxis.size(); ++i) {
+
+        // 检查是否已请求取消
+        if (m_cancelRequested.loadAcquire()) {
+            break;
+        }
+
+        // 每处理100个点报告一次进度，避免信号过于频繁
+        if (i > 0 && i % 100 == 0) {
+            emit queryProgressUpdated(i, localTimeAxis.size());
+        }
+
+        int64_t targetTime = localTimeAxis[i].toMSecsSinceEpoch();
 
         // 查找最接近的时间戳
         int64_t closestTime = -1;
@@ -298,17 +280,28 @@ QHash<QString, QVector<double>> UnifiedQueryParser::alignData(
             }
         }
 
-        // 如果在容错范围内，使用该数据
+        // 如果找到的时间戳在容错范围内，则使用该数据
         if (closestTime != -1 && minDiff <= tolerance) {
             const std::vector<float>& values = rawData.at(closestTime);
 
             for (int j = 0; j < rtuList.size() && j < (int)values.size(); ++j) {
-                result[rtuList[j]][i] = values[j];
+                // 过滤无效的浮点数值
+                if (std::isnan(values[j]) || std::isinf(values[j])) {
+                    result[rtuList[j]][i] = std::numeric_limits<double>::quiet_NaN();
+                }
+                else {
+                    result[rtuList[j]][i] = values[j];
+                }
             }
             matchCount++;
         }
     }
 
-    qDebug() << QString("数据对齐完成：匹配 %1/%2").arg(matchCount).arg(m_timeAxis.size());
+    // 如果任务不是被取消的，则发送最终进度，确保进度条达到100%
+    if (!m_cancelRequested.loadAcquire()) {
+        emit queryProgressUpdated(localTimeAxis.size(), localTimeAxis.size());
+    }
+
+    qDebug() << QString("数据对齐完成：匹配 %1/%2").arg(matchCount).arg(localTimeAxis.size());
     return result;
 }

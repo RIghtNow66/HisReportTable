@@ -21,26 +21,19 @@ public:
     // ===== 统一查询特有接口 =====
     void setTimeRange(const TimeRangeConfig& config);
     const HistoryReportConfig& getConfig() const { return m_config; }
-    const QVector<QDateTime>& getTimeAxis() const { return m_timeAxis; }
-    const QHash<QString, QVector<double>>& getAlignedData() const { return m_alignedData; }
+    const QVector<QDateTime>& getTimeAxis() const;
+    const QHash<QString, QVector<double>>& getAlignedData() const;
 
     int getQueryIntervalSeconds() const override { return m_timeConfig.intervalSeconds; }
-
-    void startAsyncQuery();
-    void requestCancel();
-    bool isQuerying() const { return m_isQuerying; }
 
 signals:
     // 查询进度信号（在后台线程中发射，主线程接收）
     void queryProgressUpdated(int current, int total);
-    void queryStageChanged(QString stage);  // 查询阶段变化（如"正在生成时间轴"、"正在查询数据库"等）
-
-    void queryCompletedWithStatus(bool success, QString message);
-
-private slots:
-    void onQueryFinished();
+    void queryStageChanged(const QString& stage);  // 查询阶段变化
 
 protected:
+    bool runAsyncTask() override;
+
     // ===== 实现纯虚函数（统一查询不需要这些）=====
     bool findDateMarker() override { return true; }
     void parseRow(int row) override { Q_UNUSED(row); }
@@ -53,7 +46,6 @@ protected:
     bool analyzeAndPrefetch() override { return true; }  // 空实现
     QList<TimeBlock> identifyTimeBlocks() override { return QList<TimeBlock>(); }  // 空实现
 
-    bool executeQueriesInternal();
 
 private:
     HistoryReportConfig m_config;           // 配置信息
@@ -61,10 +53,7 @@ private:
     QVector<QDateTime> m_timeAxis;          // 时间轴
     QHash<QString, QVector<double>> m_alignedData;  // 对齐后的数据
 
-    QFuture<bool> m_queryFuture;
-    QFutureWatcher<bool>* m_queryWatcher;
-    QAtomicInt m_cancelRequested;
-    bool m_isQuerying;
+    mutable QMutex m_dataMutex;
 
 private:
     // ===== 私有辅助函数 =====

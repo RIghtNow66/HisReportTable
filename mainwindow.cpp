@@ -910,7 +910,15 @@ void MainWindow::onRefreshData()
             m_unifiedQueryProgress, &QProgressDialog::setLabelText,
             Qt::QueuedConnection);
 
-        connect(parser, &UnifiedQueryParser::queryCompletedWithStatus,
+        connect(parser, &UnifiedQueryParser::queryProgressUpdated,
+            m_unifiedQueryProgress, [this](int current, int total) {
+                if (m_unifiedQueryProgress->maximum() != total) {
+                    m_unifiedQueryProgress->setMaximum(total);
+                }
+                m_unifiedQueryProgress->setValue(current);
+            }, Qt::QueuedConnection);
+
+        connect(parser, &UnifiedQueryParser::asyncTaskCompleted,
             this, &MainWindow::onUnifiedQueryCompleted,
             Qt::QueuedConnection);
 
@@ -918,7 +926,7 @@ void MainWindow::onRefreshData()
             this, &MainWindow::onUnifiedQueryCanceled);
 
         // 启动异步查询
-        m_dataModel->refreshReportData(nullptr);  // 内部会调 startAsyncQuery()
+        m_dataModel->refreshReportData(nullptr);
 
         return;  // 立即返回，不等待
     }
@@ -971,6 +979,7 @@ void MainWindow::onRefreshData()
         }
 
         bool completed = m_dataModel->refreshReportData(&progress);
+
 
         disconnect(parser, nullptr, &progress, nullptr);
 

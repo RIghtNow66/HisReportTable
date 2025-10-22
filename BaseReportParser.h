@@ -83,7 +83,9 @@ public:
 
     bool isValid() const { return m_dateFound; }
     int getPendingQueryCount() const { return m_queryTasks.size(); }
-    bool isPrefetching() const { return m_isPrefetching; }
+
+    bool isAsyncTaskRunning() const { return m_isTaskRunning; }
+    void requestCancel();
 
     // ===== 测试接口 =====
     virtual void runCorrectnessTest();                   // 验证数据对应关系
@@ -94,6 +96,8 @@ public:
     EditState getEditState() const { return m_editState; }
     void setEditState(EditState state) { m_editState = state; }
 
+    void startAsyncTask();
+
 signals:
     void parseProgress(int current, int total);
     void queryProgress(int current, int total);
@@ -102,7 +106,9 @@ signals:
     void prefetchProgress(int current, int total);
     void databaseError(QString errorMessage);
 
-    void prefetchCompleted(bool hasData, int dataCount, int successCount, int totalCount);
+    void taskProgress(int current, int total);
+
+    void asyncTaskCompleted(bool success, const QString& message);
 
 protected:
     // ===== 子类需要实现的纯虚函数 =====
@@ -139,6 +145,9 @@ protected:
      * @return 间隔秒数
      */
     virtual int getQueryIntervalSeconds() const = 0;
+
+    // 子类需要重写的后台任务函数 
+    virtual bool runAsyncTask() = 0;
 
     // ===== 通用工具函数（子类可直接使用） =====
 
@@ -192,6 +201,7 @@ protected:
     */
     virtual bool getDateRange(QString& startDate, QString& endDate);
 
+
     // ===== 标记识别（子类可选择性重写） =====
     virtual bool isTimeMarker(const QString& text) const;
     virtual bool isDataMarker(const QString& text) const;
@@ -200,7 +210,7 @@ protected:
     virtual QString extractRtuId(const QString& text);
 
 protected slots:
-    void onPrefetchFinished();
+    void onAsyncTaskFinished();
 
 protected:
     // ===== 数据成员 =====
@@ -221,10 +231,10 @@ protected:
     QMutex m_cacheMutex;               // 缓存互斥锁
 
     // 预查询
-    QFuture<bool> m_prefetchFuture;
-    QFutureWatcher<bool>* m_prefetchWatcher;
-    bool m_isPrefetching;
-    QAtomicInt m_stopRequested;
+    QFuture<bool> m_taskFuture;
+    QFutureWatcher<bool>* m_taskWatcher;
+    bool m_isTaskRunning;
+    QAtomicInt m_cancelRequested;
 
     int m_lastPrefetchSuccessCount;
     int m_lastPrefetchTotalCount;

@@ -57,22 +57,7 @@ bool DayReportParser::scanAndParse()
 
     // 启动后台预查询
     qDebug() << "========== 开始后台预查询 ==========";
-    m_isPrefetching = true;
-
-    m_prefetchFuture = QtConcurrent::run([this]() -> bool {
-        qDebug() << "[后台线程] 预查询开始...";
-        try {
-            bool result = this->analyzeAndPrefetch();
-            qDebug() << "[后台线程] 预查询" << (result ? "成功" : "失败");
-            return result;
-        }
-        catch (const std::exception& e) {
-            qWarning() << "[后台线程] 异常：" << e.what();
-            return false;
-        }
-        });
-
-    m_prefetchWatcher->setFuture(m_prefetchFuture);
+    startAsyncTask();
 
     QString msg = QString("解析成功：找到 %1 个数据点，数据加载中...")
         .arg(m_queryTasks.size());
@@ -80,6 +65,13 @@ bool DayReportParser::scanAndParse()
 
     qDebug() << "========================================";
     return true;
+}
+
+bool DayReportParser::runAsyncTask()
+{
+    qDebug() << "[后台线程] 日报预查询开始...";
+    // analyzeAndPrefetch 包含了取消检查
+    return this->analyzeAndPrefetch();
 }
 
 bool DayReportParser::findDateMarker()

@@ -33,6 +33,8 @@ protected:
     QDateTime constructDateTime(const QString& date, const QString& time) override;
     int getQueryIntervalSeconds() const override { return 60; }  // 日报间隔60秒
 
+    bool runAsyncTask() override;
+
 private:
     // ===== 日报特有的标记识别 =====
     bool isDateMarker(const QString& text) const;

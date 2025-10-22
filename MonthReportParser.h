@@ -44,6 +44,8 @@ protected:
     // ==== = 重写预查询逻辑 ==== =
     bool analyzeAndPrefetch() override;
 
+    bool runAsyncTask() override;
+
 private:
     // ===== 月报特有的标记识别 =====
     bool isDate1Marker(const QString& text) const;
