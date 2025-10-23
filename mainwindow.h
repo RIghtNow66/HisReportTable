@@ -111,6 +111,13 @@ private:
 
     TimeSettingsDialog* m_timeSettingsDialog;
 
+    // 记忆上次的时间配置
+    struct LastTimeSettings {
+        TimeRangeConfig config;           // 时间配置
+        TimeSettingsDialog::ReportType reportType;  // 报表类型
+        bool isValid = false;             // 是否有效
+    } m_lastTimeSettings;
+
     QProgressDialog* m_unifiedQueryProgress = nullptr;
 
 private:

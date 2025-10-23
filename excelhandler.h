@@ -31,6 +31,10 @@ public:
     static bool loadFromFile(const QString& fileName, ReportDataModel* model);
     static bool saveToFile(const QString& fileName, ReportDataModel* model,
         ExportMode mode = EXPORT_DATA);
+
+    static bool saveUnifiedQueryToFile(const QString& fileName,
+        ReportDataModel* model,
+        ExportMode mode = EXPORT_DATA);
 private:
     ExcelHandler() = delete;
     ~ExcelHandler() = delete;

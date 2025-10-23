@@ -1182,8 +1182,15 @@ bool ReportDataModel::loadFromExcelFile(const QString& fileName)
 
 bool ReportDataModel::saveToExcel(const QString& fileName, ExportMode mode)
 {
-    return ExcelHandler::saveToFile(fileName, this,
-        mode == EXPORT_DATA ? ExcelHandler::EXPORT_DATA : ExcelHandler::EXPORT_TEMPLATE);
+    // 根据模式分发
+    if (m_currentMode == UNIFIED_QUERY_MODE) {
+        return ExcelHandler::saveUnifiedQueryToFile(fileName, this,
+            mode == EXPORT_DATA ? ExcelHandler::EXPORT_DATA : ExcelHandler::EXPORT_TEMPLATE);
+    }
+    else {
+        return ExcelHandler::saveToFile(fileName, this,
+            mode == EXPORT_DATA ? ExcelHandler::EXPORT_DATA : ExcelHandler::EXPORT_TEMPLATE);
+    }
 }
 
 
@@ -1272,6 +1279,69 @@ void ReportDataModel::calculateFormula(int row, int col)
 CellData* ReportDataModel::getCell(int row, int col)
 {
     return m_cells.value(QPoint(row, col), nullptr);
+}
+
+QVariant ReportDataModel::getCellValueForFormula(int row, int col) const
+{
+    // ===== 统一查询模式：优先从虚拟数据读取 =====
+    if (m_currentMode == UNIFIED_QUERY_MODE) {
+        UnifiedQueryParser* queryParser = dynamic_cast<UnifiedQueryParser*>(m_parser);
+        if (queryParser) {
+            const QVector<QDateTime>& timeAxis = queryParser->getTimeAxis();
+            const HistoryReportConfig& config = queryParser->getConfig();
+            const QHash<QString, QVector<double>>& data = queryParser->getAlignedData();
+
+            // 如果有查询数据
+            if (!timeAxis.isEmpty()) {
+                // 跳过表头行
+                if (row == 0) {
+                    return QVariant();
+                }
+
+                int dataRow = row - 1;
+                if (dataRow >= 0 && dataRow < timeAxis.size()) {
+                    // 时间列（第0列）
+                    if (col == 0) {
+                        return timeAxis[dataRow].toString("yyyy-MM-dd HH:mm:ss");
+                    }
+                    // 数据列（第1列到第N列）
+                    else if (col >= 1 && col <= m_dataColumnCount) {
+                        int configIndex = col - 1;
+                        if (configIndex < config.columns.size()) {
+                            QString rtuId = config.columns[configIndex].rtuId;
+                            if (data.contains(rtuId) && dataRow < data[rtuId].size()) {
+                                double value = data[rtuId][dataRow];
+                                if (std::isnan(value) || std::isinf(value)) {
+                                    return QVariant("N/A");  // N/A 视为空值
+                                }
+                                return value;  // 返回数值，不要转成字符串
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // ===== 模板模式或用户自定义列：从 m_cells 读取 =====
+    const CellData* cell = getCell(row, col);
+    if (!cell) {
+        return QVariant();
+    }
+
+    // 如果单元格有公式且已计算，返回计算结果
+    if (cell->hasFormula && cell->formulaCalculated) {
+        return cell->value;
+    }
+
+    // 如果单元格有公式但未计算，返回 0（避免循环依赖）
+    if (cell->hasFormula && !cell->formulaCalculated) {
+        qWarning() << QString("引用了未计算的公式单元格: (%1, %2)").arg(row).arg(col);
+        return QVariant(0.0);
+    }
+
+    // 普通单元格，返回值
+    return cell->value;
 }
 
 const CellData* ReportDataModel::getCell(int row, int col) const
@@ -1629,6 +1699,8 @@ bool ReportDataModel::refreshUnifiedQuery(QProgressDialog* progress)
 
     // ===== 启动异步查询 =====
     queryParser->startAsyncTask();
+
+    m_isFirstRefresh = false;
 
     // 立即返回，不等待查询完成
     return true;

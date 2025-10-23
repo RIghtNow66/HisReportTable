@@ -119,6 +119,7 @@ public:
     CellData* ensureCell(int row, int col);
     void calculateFormula(int row, int col);
     QString cellAddress(int row, int col) const;
+    QVariant getCellValueForFormula(int row, int col) const;
 
     // 行高列宽
     void setRowHeight(int row, double height);

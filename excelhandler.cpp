@@ -610,3 +610,110 @@ QVariant ExcelHandler::getCellValueForExport(const CellData* cell, ExportMode mo
         return cell->value;
     }
 }
+
+bool ExcelHandler::saveUnifiedQueryToFile(const QString& fileName,
+    ReportDataModel* model,
+    ExportMode mode)
+{
+    if (fileName.isEmpty() || !model) {
+        QMessageBox::warning(nullptr, "错误", "参数无效");
+        return false;
+    }
+
+    QString actualFileName = fileName;
+    if (!actualFileName.endsWith(".xlsx", Qt::CaseInsensitive)) {
+        actualFileName += ".xlsx";
+    }
+
+    auto progress = std::make_unique<QProgressDialog>(
+        "正在导出Excel文件...", "取消", 0, 100, nullptr);
+    progress->setWindowModality(Qt::ApplicationModal);
+    progress->setMinimumDuration(0);
+    progress->show();
+
+    QXlsx::Document xlsx;
+    QXlsx::Worksheet* worksheet = xlsx.currentWorksheet();
+    if (!worksheet) {
+        QMessageBox::warning(nullptr, "错误", "无法创建Excel工作表");
+        return false;
+    }
+
+    progress->setValue(10);
+
+    int totalRows = model->rowCount();
+    int totalCols = model->columnCount();
+
+    // ===== 【关键】按行列顺序导出，使用 data() 接口 =====
+    for (int row = 0; row < totalRows; ++row) {
+        if (progress->wasCanceled()) return false;
+
+        for (int col = 0; col < totalCols; ++col) {
+            QModelIndex index = model->index(row, col);
+
+            // 根据导出模式选择数据
+            QVariant valueToWrite;
+            if (mode == EXPORT_DATA) {
+                // 导出数据：显示值（虚拟数据会自动从 data() 返回）
+                valueToWrite = model->data(index, Qt::DisplayRole);
+            }
+            else {
+                // 导出模板：原始标记
+                const CellData* cell = model->getCell(row, col);
+                if (cell) {
+                    if (cell->hasFormula) {
+                        valueToWrite = cell->formula;
+                    }
+                    else if (!cell->originalMarker.isEmpty()) {
+                        valueToWrite = cell->originalMarker;
+                    }
+                    else {
+                        valueToWrite = cell->value;
+                    }
+                }
+                else {
+                    // 虚拟单元格在导出模板时跳过
+                    continue;
+                }
+            }
+
+            // 写入 Excel
+            if (!valueToWrite.isNull()) {
+                int excelRow = row + 1;
+                int excelCol = col + 1;
+
+                // 获取格式
+                const CellData* cell = model->getCell(row, col);
+                if (cell) {
+                    QXlsx::Format cellFormat = convertToExcelFormat(cell->style);
+                    worksheet->write(excelRow, excelCol, valueToWrite, cellFormat);
+                }
+                else {
+                    // 虚拟单元格使用默认格式
+                    worksheet->write(excelRow, excelCol, valueToWrite);
+                }
+            }
+        }
+
+        // 更新进度
+        int progressValue = 10 + (row * 80 / totalRows);
+        progress->setValue(progressValue);
+        qApp->processEvents();
+    }
+
+    progress->setValue(90);
+
+    // 保存合并单元格（如果有）
+    const auto& allCells = model->getAllCells();
+    saveMergedCells(worksheet, allCells);
+
+    progress->setValue(95);
+
+    if (!xlsx.saveAs(actualFileName)) {
+        QMessageBox::warning(nullptr, "保存失败",
+            QString("无法保存文件到：%1").arg(actualFileName));
+        return false;
+    }
+
+    progress->setValue(100);
+    return true;
+}

@@ -28,7 +28,6 @@ MainWindow::MainWindow(QWidget* parent)
     , m_filterModel(nullptr)
     , m_timeSettingsDialog(nullptr)
 {
-
     setupUI();
     setupToolBar();
     setupFormulaBar();
@@ -301,6 +300,8 @@ void MainWindow::onImportExcel()
     if (m_dataModel->loadReportTemplate(fileName)) {
         applyRowColumnSizes();
         m_tableView->updateSpans();
+
+        m_lastTimeSettings.isValid = false;
 
         QFileInfo fileInfo(fileName);
         setWindowTitle(QString("SCADA报表控件 - [%1]").arg(fileInfo.fileName()));
@@ -858,17 +859,28 @@ void MainWindow::onRefreshData()
 
         // 如果只有公式变化，询问用户是否只计算公式
         if (changeType == ReportDataModel::UQ_FORMULA_ONLY) {
-            auto reply = QMessageBox::question(
-                this,
-                "检测到新增公式",
-                "检测到新增公式，但数据未变化。\n\n"
+            QMessageBox msgBox(this);
+            msgBox.setWindowTitle("检测到新增公式");
+            msgBox.setText("检测到新增公式，但数据未变化。");
+            msgBox.setInformativeText(
                 "请选择操作：\n"
                 "• 是：仅计算新增公式，不重新查询数据\n"
                 "• 否：重新选择时间范围并查询数据\n\n"
-                "建议：如果只是添加了计算列，选择\"是\"即可。",
-                QMessageBox::Yes | QMessageBox::No,
-                QMessageBox::Yes
+                "建议：如果只是添加了计算列，选择\"是\"即可。"
             );
+            QPushButton* yesButton = msgBox.addButton("是", QMessageBox::YesRole);
+            QPushButton* noButton = msgBox.addButton("否", QMessageBox::NoRole);
+            msgBox.setDefaultButton(yesButton);
+
+            msgBox.exec();
+
+            QMessageBox::StandardButton reply;
+            if (msgBox.clickedButton() == yesButton) {
+                reply = QMessageBox::Yes;
+            }
+            else {
+                reply = QMessageBox::No;
+            }
 
             if (reply == QMessageBox::Yes) {
                 // 只计算公式
@@ -885,9 +897,18 @@ void MainWindow::onRefreshData()
         }
 
         // 设置默认值
-        QDateTime now = QDateTime::currentDateTime();
-        m_timeSettingsDialog->setStartTime(QDateTime(now.date(), QTime(0, 0, 0)));
-        m_timeSettingsDialog->setReportType(TimeSettingsDialog::Daily);
+        if (m_lastTimeSettings.isValid) {
+            qDebug() << "恢复上次时间配置";
+            m_timeSettingsDialog->setStartTime(m_lastTimeSettings.config.startTime);
+            m_timeSettingsDialog->setReportType(m_lastTimeSettings.reportType);
+            // 注意：setReportType 内部会自动计算 endTime，所以不需要手动设置 endTime
+        }
+        else {
+            qDebug() << "使用默认时间配置";
+            QDateTime now = QDateTime::currentDateTime();
+            m_timeSettingsDialog->setStartTime(QDateTime(now.date(), QTime(0, 0, 0)));
+            m_timeSettingsDialog->setReportType(TimeSettingsDialog::Daily);
+        }
 
         // 显示对话框
         if (m_timeSettingsDialog->exec() != QDialog::Accepted) {
@@ -912,6 +933,10 @@ void MainWindow::onRefreshData()
             return;
         }
 
+        m_lastTimeSettings.config = config;
+        m_lastTimeSettings.reportType = m_timeSettingsDialog->getReportType();
+        m_lastTimeSettings.isValid = true;
+
         // 将配置传递给 Model
         m_dataModel->setTimeRangeForQuery(config);
 
@@ -925,6 +950,11 @@ void MainWindow::onRefreshData()
         m_unifiedQueryProgress->setWindowModality(Qt::NonModal);
         m_unifiedQueryProgress->setMinimumDuration(500);
         m_unifiedQueryProgress->show();
+
+        // 先断开旧连接，避免重复
+        disconnect(parser, &UnifiedQueryParser::queryStageChanged, nullptr, nullptr);
+        disconnect(parser, &UnifiedQueryParser::queryProgressUpdated, nullptr, nullptr);
+        disconnect(parser, &UnifiedQueryParser::asyncTaskCompleted, nullptr, nullptr);
 
         // ===== 连接信号（在启动任务前） =====
         connect(parser, &UnifiedQueryParser::queryStageChanged,
