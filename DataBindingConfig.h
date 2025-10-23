@@ -71,18 +71,7 @@ struct RTMergedRange {
 
 // ===== 单元格数据（核心结构）=====
 struct CellData {
-    // ===== 基础字段 =====
-    QVariant value;                    // 显示值
-    QString formula;                   // 公式（如 "=SUM(A1:A10)"）
-    bool hasFormula;                   // 是否有公式
-    RTCellStyle style;                 // 样式
-    RTMergedRange mergedRange;         // 合并信息
-
-    // ===== 数据绑定字段（旧实时模式，保留兼容）=====
-    bool isDataBinding;                // 是否是数据绑定（##RTU号）
-    QString bindingKey;                // 绑定键（如 "##RTU001"）
-
-    // ===== 日报标记字段（新增）=====
+    // ===== 单元格类型枚举 =====
     enum CellType {
         NormalCell,         // 普通单元格
         DateMarker,         // #Date 标记
@@ -90,35 +79,79 @@ struct CellData {
         DataMarker          // #d# 标记（需要查询）
     };
 
-    CellType cellType;                 // 单元格类型
-    QString originalMarker;            // 原始标记文本（如 "#d#AIRTU034700019"）
-    QString queryPath;                 // 查询地址（如 "AIRTU034700019@2024-01-01 00:00:00~..."）
-    QString rtuId;                     // 提取的RTU号（如 "AIRTU034700019"）
-    bool queryExecuted;                // 是否已执行查询
-    bool querySuccess;                 // 查询是否成功
+    // ========================================
+    // ===== 显示层（用户看到的） =====
+    // ========================================
+    QVariant displayValue;              // 显示值："2025年1月1日", "123.45", 公式计算结果
 
-    bool formulaCalculated = false;  // 标记公式是否已计算过
+    // ========================================
+    // ===== 标记层（程序逻辑用的） =====
+    // ========================================
+    QString markerText;                 // 原始标记："#Date:2025-01-01", "#t#0:00", "#d#RTU001"
+    CellType cellType;                  // 单元格类型
+    QString rtuId;                      // 数据标记的RTU号（从markerText解析）
+
+    // ========================================
+    // ===== 公式相关 =====
+    // ========================================
+    bool hasFormula;                    // 是否有公式
+    QString formula;                    // 公式文本："=A1+B1"
+    bool formulaCalculated;             // 公式是否已计算
+
+    // ========================================
+    // ===== 查询状态 =====
+    // ========================================
+    bool queryExecuted;                 // 是否已执行查询
+    bool querySuccess;                  // 查询是否成功
+
+    // ========================================
+    // ===== 样式 =====
+    // ========================================
+    RTCellStyle style;                  // 样式
+    RTMergedRange mergedRange;          // 合并信息
+
+    // ========================================
+    // ===== 兼容性字段（保留用于向后兼容，后续可删除） =====
+    // ========================================
+    QVariant value;                     // 已废弃，使用 displayValue 代替
+    QString originalMarker;             // 已废弃，使用 markerText 代替
+    bool isDataBinding;                 // 已废弃（旧实时模式）
+    QString bindingKey;                 // 已废弃（旧实时模式）
+    QString queryPath;                  // 已废弃
 
     // ===== 构造函数 =====
     CellData()
-        : hasFormula(false)
-        , isDataBinding(false)
+        : displayValue()
+        , markerText()
         , cellType(NormalCell)
+        , rtuId()
+        , hasFormula(false)
+        , formula()
+        , formulaCalculated(false)
         , queryExecuted(false)
         , querySuccess(false)
+        , style()
+        , mergedRange()
+        , value()                       // 兼容性字段
+        , originalMarker()              // 兼容性字段
+        , isDataBinding(false)          // 兼容性字段
+        , bindingKey()                  // 兼容性字段
+        , queryPath()                   // 兼容性字段
     {
     }
 
-    // ===== 工具函数 =====
-
-    // 是否需要查询（日报模式）
-    bool needsQuery() const {
-        return cellType == DataMarker && !queryExecuted;
-    }
+    // ========================================
+    // ===== 核心判断方法 =====
+    // ========================================
 
     // 是否是标记单元格
     bool isMarker() const {
         return cellType != NormalCell;
+    }
+
+    // 是否需要查询（日报模式）
+    bool needsQuery() const {
+        return cellType == DataMarker && !queryExecuted;
     }
 
     // 是否是合并单元格的主单元格
@@ -126,33 +159,76 @@ struct CellData {
         return mergedRange.isValid() && mergedRange.isMerged();
     }
 
-    // 设置公式
-    void setFormula(const QString& formulaText) {
-        formula = formulaText;  // 直接保存，不做任何处理
-        hasFormula = true;
-    }
+    // ========================================
+    // ===== 文本获取方法（用于不同场景） =====
+    // ========================================
 
-    // 获取显示文本
+    /**
+     * 获取显示文本（Model的DisplayRole用）
+     * 优先级：公式计算结果 > 公式文本 > 显示值
+     */
     QString displayText() const {
-        if (cellType == DateMarker || cellType == TimeMarker) {
-            return value.toString();
+        if (hasFormula && formulaCalculated) {
+            return displayValue.toString();  // 显示公式计算结果
         }
         if (hasFormula && !formulaCalculated) {
-            return formula;  // 未计算时显示公式文本
+            return formula;  // 显示公式文本
         }
-        return value.toString();  // 已计算时显示结果值
+        return displayValue.toString();  // 显示普通值或转换后的标记
     }
 
-
-    // 获取编辑文本
+    /**
+     * 获取编辑文本（Model的EditRole用）
+     * 优先级：公式 > 标记 > 显示值
+     */
     QString editText() const {
         if (hasFormula) {
-            return formula; // 编辑时总是显示公式
+            return formula;  // 编辑时显示公式
         }
+        if (!markerText.isEmpty()) {
+            return markerText;  // 编辑时显示原始标记
+        }
+        // 兼容旧数据
         if (!originalMarker.isEmpty()) {
-            return originalMarker; // 日报标记编辑时显示原始标记
+            return originalMarker;
         }
-        return value.toString();
+        return displayValue.toString();  // 编辑普通值
+    }
+
+    /**
+     * 获取用于扫描的文本（解析器用）
+     * 优先级：标记文本 > 兼容字段 > 显示值
+     */
+    QString scanText() const {
+        // 优先使用标记文本
+        if (!markerText.isEmpty()) {
+            return markerText;
+        }
+        // 兼容旧数据：尝试从 originalMarker 读取
+        if (!originalMarker.isEmpty()) {
+            return originalMarker;
+        }
+        // 兼容旧数据：尝试从 value 读取
+        if (!value.isNull() && !value.toString().isEmpty()) {
+            return value.toString();
+        }
+        // 最后降级到 displayValue
+        return displayValue.toString();
+    }
+
+    // ========================================
+    // ===== 公式操作方法 =====
+    // ========================================
+
+    /**
+     * 设置公式
+     */
+    void setFormula(const QString& formulaText) {
+        formula = formulaText;
+        hasFormula = true;
+        formulaCalculated = false;
+        markerText.clear();  // 公式不是标记
+        cellType = NormalCell;
     }
 };
 
@@ -188,8 +264,5 @@ struct TimeRangeConfig {
 struct GlobalDataConfig {
     TimeRangeConfig globalTimeRange;
 };
-
-
-
 
 #endif // DATABINDINGCONFIG_H

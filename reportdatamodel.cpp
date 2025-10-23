@@ -343,11 +343,12 @@ void ReportDataModel::restoreTemplateReport()
     }
 
     // 重置所有公式为未计算状态
+ // 重置所有公式为未计算状态
     for (auto it = m_cells.begin(); it != m_cells.end(); ++it) {
         CellData* cell = it.value();
         if (cell && cell->hasFormula) {
             cell->formulaCalculated = false;
-            cell->value = cell->formula;
+            cell->displayValue = cell->formula;  // 显示公式文本
         }
     }
 
@@ -564,32 +565,37 @@ QFont ReportDataModel::ensureFontAvailable(const QFont& requestedFont) const
 QVariant ReportDataModel::getTemplateCellData(const QModelIndex& index, int role) const
 {
     if (!index.isValid()) return QVariant();
-    // ===== 这里放置原 data() 函数中的所有逻辑 =====
+
     const CellData* cell = getCell(index.row(), index.column());
     if (!cell) return QVariant();
 
     switch (role) {
     case Qt::DisplayRole:
-        return cell->displayText();
+        return cell->displayText();  // 使用封装的方法
+
     case Qt::EditRole:
-        return cell->editText();
+        return cell->editText();     // 使用封装的方法
+
     case Qt::BackgroundRole:
         if (cell->cellType == CellData::DataMarker &&
             cell->queryExecuted && !cell->querySuccess) {
             return QBrush(QColor(255, 220, 220));
         }
         return QBrush(cell->style.backgroundColor);
+
     case Qt::ForegroundRole:
         return QBrush(cell->style.textColor);
+
     case Qt::FontRole:
         return ensureFontAvailable(cell->style.font);
+
     case Qt::TextAlignmentRole:
         return static_cast<int>(cell->style.alignment);
+
     default:
         return QVariant();
     }
 }
-
 QVariant ReportDataModel::data(const QModelIndex& index, int role) const
 {
     if (!index.isValid())
@@ -837,7 +843,7 @@ bool ReportDataModel::refreshTemplateReport(QProgressDialog* progress)
     else if (changeType == BINDING_ONLY || changeType == MIXED_CHANGE) {
         // 没有脏单元格，但快照检测到新增绑定（用户可能恢复配置后重新添加）
         qDebug() << "检测到新增绑定，需要全量查询";
-        m_parser->clearCache();
+        //m_parser->clearCache();
         if (!m_parser->scanAndParse()) {
             qWarning() << "扫描失败";
             return false;
@@ -897,6 +903,29 @@ QString ReportDataModel::extractRtuId(const QString& text)
     return QString();
 }
 
+QString ReportDataModel::extractTime(const QString& text)
+{
+    // 提取时间：#t#0:00 → "00:00:00"
+    QString timeStr = text.mid(3).trimmed();
+    QStringList parts = timeStr.split(":");
+
+    if (parts.size() == 2) {
+        timeStr += ":00";
+    }
+    else if (parts.size() != 3) {
+        qWarning() << "时间格式错误:" << text;
+        return "00:00:00";
+    }
+
+    QTime time = QTime::fromString(timeStr, "H:mm:ss");
+    if (!time.isValid()) {
+        qWarning() << "时间解析失败:" << timeStr;
+        return "00:00:00";
+    }
+
+    return time.toString("HH:mm:ss");
+}
+
 bool ReportDataModel::setData(const QModelIndex& index, const QVariant& value, int role)
 {
     if (!index.isValid() || role != Qt::EditRole) {
@@ -906,71 +935,99 @@ bool ReportDataModel::setData(const QModelIndex& index, const QVariant& value, i
     int row = index.row();
     int col = index.column();
 
-    CellData* cell = ensureCell(index.row(), index.column());
+    CellData* cell = ensureCell(row, col);
     if (!cell) {
         return false;
     }
 
     QString text = value.toString();
 
-    if (cell->hasFormula && text == cell->formula) {
-        return false;  // 公式未修改，不做任何处理
-    }
-
-    if (cell->isMarker() && text == cell->originalMarker) {
+    // ===== 快速路径：如果编辑文本没变，不做任何处理 =====
+    if (text == cell->editText()) {
         return false;
     }
 
-    if (cell->isMarker() && text == cell->originalMarker) {
-        return false;
-    }
+    // ===== 清理旧状态（但保留 cellType 判断历史） =====
+    CellData::CellType oldType = cell->cellType;
 
-    // 清理旧的状态
     cell->isDataBinding = false;
     cell->hasFormula = false;
-    cell->formulaCalculated = false;  // 重置计算标记
-    cell->cellType = CellData::NormalCell;
-    cell->originalMarker.clear();
-    cell->formula.clear();
+    cell->formulaCalculated = false;
     cell->bindingKey.clear();
 
-    // ===== 只支持 #=# 延迟公式 =====
+    // ===== 处理公式 =====
     if (text.startsWith("#=#")) {
         cell->hasFormula = true;
         cell->formula = text;
-        cell->value = text;  // 显示公式文本
-        cell->formulaCalculated = false;  // 标记为未计算
-        // 不立即调用 calculateFormula
+        cell->displayValue = text;  // 显示公式文本
+        cell->markerText.clear();   // 不是标记
+        cell->cellType = CellData::NormalCell;
+        cell->formulaCalculated = false;
 
-        m_dirtyFormulas.insert(QPoint(index.row(), index.column()));
+        m_dirtyFormulas.insert(QPoint(row, col));
     }
+    // ===== 处理数据标记 #d# =====
+    else if (text.startsWith("#d#", Qt::CaseInsensitive)) {
+        QString rtuId = extractRtuId(text);
+
+        cell->cellType = CellData::DataMarker;
+        cell->markerText = text;          // 保存原始标记
+        cell->rtuId = rtuId;
+        cell->displayValue = text;        // 初始显示标记
+        cell->queryExecuted = false;
+        cell->querySuccess = false;
+
+        // 兼容性
+        cell->originalMarker = text;
+
+        // 标记为脏（如果类型变了或RTU号变了）
+        if (oldType != CellData::DataMarker) {
+            markCellDirty(row, col);
+        }
+    }
+    // ===== 处理时间标记 #t# =====
+    else if (text.startsWith("#t#", Qt::CaseInsensitive)) {
+        cell->cellType = CellData::TimeMarker;
+        cell->markerText = text;          // 保存原始标记
+
+        // 解析时间并设置显示值
+        QString timeStr = extractTime(text);
+        cell->displayValue = timeStr.left(5);  // 显示 "00:00"
+
+        // 兼容性
+        cell->originalMarker = text;
+
+        if (oldType != CellData::TimeMarker) {
+            markCellDirty(row, col);
+        }
+    }
+    // ===== 处理日期标记 #Date =====
+    else if (text.startsWith("#Date", Qt::CaseInsensitive)) {
+        cell->cellType = CellData::DateMarker;
+        cell->markerText = text;          // 保存原始标记
+        cell->displayValue = text;        // 暂时显示原始标记（解析器会更新）
+
+        // 兼容性
+        cell->originalMarker = text;
+
+        if (oldType != CellData::DateMarker) {
+            markCellDirty(row, col);
+        }
+    }
+    // ===== 处理普通文本 =====
     else {
-        // 普通文本或其他标记
-        cell->value = value;
-
-        if (text.startsWith("#d#", Qt::CaseInsensitive)) {
-            cell->cellType = CellData::DataMarker;
-            cell->originalMarker = text;
-            cell->rtuId = extractRtuId(text);
-            cell->queryExecuted = false;
-            cell->querySuccess = false;
-
-            markCellDirty(row, col);
-        }
-        else if (text.startsWith("#t#", Qt::CaseInsensitive)) {
-            cell->cellType = CellData::TimeMarker;
-            cell->originalMarker = text;
-            markCellDirty(row, col);
-        }
-        else if (text.startsWith("#Date", Qt::CaseInsensitive)) {
-            cell->cellType = CellData::DateMarker;
-            cell->originalMarker = text;
-            markCellDirty(row, col);
+        // 如果之前是标记，现在改成普通文本，清理标记信息
+        if (oldType != CellData::NormalCell) {
+            markCellDirty(row, col);  // 标记为脏，表示标记被删除
         }
 
-        if (!cell->hasFormula) {
-            markDependentFormulasDirty(index.row(), index.column());
-        }
+        cell->cellType = CellData::NormalCell;
+        cell->markerText.clear();
+        cell->displayValue = value;
+        cell->rtuId.clear();
+
+        // 清理兼容性字段
+        cell->originalMarker.clear();
     }
 
     // ===== 标记依赖公式为脏 =====
@@ -979,7 +1036,7 @@ bool ReportDataModel::setData(const QModelIndex& index, const QVariant& value, i
     }
 
     emit dataChanged(index, index, { role });
-    emit cellChanged(index.row(), index.column());
+    emit cellChanged(row, col);
 
     return true;
 }
@@ -1466,7 +1523,7 @@ QVariant ReportDataModel::getCellValueForFormula(int row, int col) const
 
     // 如果单元格有公式且已计算，返回计算结果
     if (cell->hasFormula && cell->formulaCalculated) {
-        return cell->value;
+        return cell->displayValue;  // 使用 displayValue
     }
 
     // 如果单元格有公式但未计算，返回 0（避免循环依赖）
@@ -1475,8 +1532,8 @@ QVariant ReportDataModel::getCellValueForFormula(int row, int col) const
         return QVariant(0.0);
     }
 
-    // 普通单元格，返回值
-    return cell->value;
+    // 普通单元格，返回显示值
+    return cell->displayValue;  // 使用 displayValue
 }
 
 const CellData* ReportDataModel::getCell(int row, int col) const
@@ -2104,13 +2161,13 @@ bool ReportDataModel::fillDataFromCache(QProgressDialog* progress)
             float value = 0.0f;
 
             if (m_parser->findInCache(cell->rtuId, timestamp, value)) {
-                cell->value = QString::number(value, 'f', 2);
+                cell->displayValue = QString::number(value, 'f', 2);  // 更新显示值
                 cell->queryExecuted = true;
                 cell->querySuccess = true;
                 successCount++;
             }
             else {
-                cell->value = "N/A";
+                cell->displayValue = "N/A";  // 更新显示值
                 cell->queryExecuted = true;
                 cell->querySuccess = false;
                 failCount++;

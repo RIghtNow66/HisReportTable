@@ -94,7 +94,8 @@ bool MonthReportParser::findDateMarker()
             CellData* cell = m_model->getCell(row, col);
             if (!cell) continue;
 
-            QString text = cell->value.toString().trimmed();
+            // ===== 使用 scanText() =====
+            QString text = cell->scanText().trimmed();
 
             // 查找 #Date1:2024-01
             if (isDate1Marker(text)) {
@@ -106,15 +107,20 @@ bool MonthReportParser::findDateMarker()
                 }
 
                 cell->cellType = CellData::DateMarker;
-                cell->originalMarker = text;
+                cell->markerText = text;  // 保存原始标记
 
                 // 设置显示格式：2024年1月
                 QDate date = QDate::fromString(m_baseYearMonth + "-01", "yyyy-MM-dd");
                 if (date.isValid()) {
-                    cell->value = QString("%1年%2月")
+                    cell->displayValue = QString("%1年%2月")
                         .arg(date.year())
                         .arg(date.month());
                 }
+                else {
+                    cell->displayValue = text;
+                }
+
+                cell->originalMarker = text;  // 兼容性
 
                 foundDate1 = true;
             }
@@ -128,8 +134,9 @@ bool MonthReportParser::findDateMarker()
                 }
 
                 cell->cellType = CellData::TimeMarker;
-                cell->originalMarker = text;
-                cell->value = m_baseTime.left(5);  // "08:30:00" → "08:30"
+                cell->markerText = text;                // 保存原始标记
+                cell->displayValue = m_baseTime.left(5); // "08:30:00" → "08:30"
+                cell->originalMarker = text;            // 兼容性
 
                 foundDate2 = true;
             }
@@ -137,8 +144,7 @@ bool MonthReportParser::findDateMarker()
             // 如果两个都找到了，可以提前退出
             if (foundDate1 && foundDate2) {
                 m_dateFound = true;
-                // 将年月和时间组合存入 m_baseDate，供基类使用
-                m_baseDate = m_baseYearMonth;  // 基类的查询需要这个
+                m_baseDate = m_baseYearMonth;
                 return true;
             }
         }
@@ -162,7 +168,8 @@ void MonthReportParser::parseRow(int row)
         CellData* cell = m_model->getCell(row, col);
         if (!cell) continue;
 
-        QString text = cell->value.toString().trimmed();
+        // ===== 使用 scanText() =====
+        QString text = cell->scanText().trimmed();
         if (text.isEmpty()) continue;
 
         // 遇到 #t# 日期标记（月报中表示"日"）
@@ -170,24 +177,28 @@ void MonthReportParser::parseRow(int row)
             int day = extractDay(text);
 
             // 验证日期是否有效
-            QDate date = QDate::fromString(m_baseYearMonth + QString("-%1").arg(day, 2, 10, QChar('0')), "yyyy-MM-dd");
+            QDate date = QDate::fromString(
+                m_baseYearMonth + QString("-%1").arg(day, 2, 10, QChar('0')),
+                "yyyy-MM-dd");
+
             if (!date.isValid()) {
-                // 无效日期（如2月30日），保留原始标记，后续查询会返回N/A
                 qWarning() << QString("行%1列%2: 无效日期 %3-%4")
                     .arg(row).arg(col).arg(m_baseYearMonth).arg(day);
+
                 cell->cellType = CellData::TimeMarker;
-                cell->originalMarker = text;
-                cell->value = text;  // 显示原始文本
+                cell->markerText = text;      // 保存原始标记
+                cell->displayValue = text;    // 显示原始文本
+                cell->originalMarker = text;  // 兼容性
                 continue;
             }
 
             // 有效日期，存储日期信息
-            m_currentTime = QString("%1").arg(day);  // 存储日期数字
+            m_currentTime = QString("%1").arg(day);
 
             cell->cellType = CellData::TimeMarker;
-            cell->originalMarker = text;
-            cell->value = QString::number(day);  // 显示日期数字
-
+            cell->markerText = text;                    // 保存原始标记
+            cell->displayValue = QString::number(day);  // 显示日期数字
+            cell->originalMarker = text;                // 兼容性
         }
         // 遇到 #d# 数据标记
         else if (isDataMarker(text)) {
@@ -203,8 +214,10 @@ void MonthReportParser::parseRow(int row)
             }
 
             cell->cellType = CellData::DataMarker;
-            cell->originalMarker = text;
+            cell->markerText = text;      // 保存原始标记
             cell->rtuId = rtuId;
+            cell->displayValue = text;    // 初始显示标记
+            cell->originalMarker = text;  // 兼容性
 
             QueryTask task;
             task.cell = cell;
@@ -213,7 +226,6 @@ void MonthReportParser::parseRow(int row)
             task.queryPath = "";
 
             m_queryTasks.append(task);
-
         }
     }
 }
@@ -283,7 +295,7 @@ bool MonthReportParser::executeQueries(QProgressDialog* progress)
         for (int col = 0; col < totalCols; ++col) {
             CellData* cell = m_model->getCell(task.row, col);
             if (cell && cell->cellType == CellData::TimeMarker) {
-                QString dayStr = cell->value.toString();
+                QString dayStr = cell->displayValue.toString();  // 使用 displayValue
                 day = dayStr.toInt();
                 break;
             }
@@ -352,14 +364,14 @@ void MonthReportParser::restoreToTemplate()
     int nullCount = 0;
 
     for (const auto& task : m_queryTasks) {
-        if (!task.cell) {  
+        if (!task.cell) {
             nullCount++;
             qWarning() << QString("跳过无效单元格：行%1 列%2").arg(task.row).arg(task.col);
             continue;
         }
 
-        // 恢复原始标记
-        task.cell->value = task.cell->originalMarker;
+        // 还原为标记文本
+        task.cell->displayValue = task.cell->markerText;  // 显示原始标记
         task.cell->queryExecuted = false;
         task.cell->querySuccess = false;
         restoredCount++;
@@ -465,7 +477,7 @@ void MonthReportParser::collectActualDays()
         for (int col = 0; col < m_model->columnCount(); ++col) {
             CellData* cell = m_model->getCell(row, col);
             if (cell && cell->cellType == CellData::TimeMarker) {
-                QString dayStr = cell->value.toString();
+                QString dayStr = cell->displayValue.toString();  // 使用 displayValue
                 bool ok;
                 int day = dayStr.toInt(&ok);
 
@@ -641,7 +653,7 @@ QString MonthReportParser::findTimeForDataMarker(int row, int col)
     for (int c = 0; c < totalCols; ++c) {
         CellData* cell = m_model->getCell(row, c);
         if (cell && cell->cellType == CellData::TimeMarker) {
-            int day = cell->value.toInt();
+            int day = cell->displayValue.toInt();  // 使用 displayValue
             if (day > 0) {
                 return QString::number(day);
             }

@@ -84,7 +84,8 @@ bool DayReportParser::findDateMarker()
             CellData* cell = m_model->getCell(row, col);
             if (!cell) continue;
 
-            QString text = cell->value.toString().trimmed();
+            // ===== 使用 scanText() 而不是 value.toString() =====
+            QString text = cell->scanText().trimmed();
 
             if (isDateMarker(text)) {
                 m_baseDate = extractDate(text);
@@ -95,16 +96,22 @@ bool DayReportParser::findDateMarker()
 
                 m_dateFound = true;
                 cell->cellType = CellData::DateMarker;
-                cell->originalMarker = text;
+                cell->markerText = text;  // 保存原始标记
 
                 // 设置显示格式
                 QDate date = QDate::fromString(m_baseDate, "yyyy-MM-dd");
                 if (date.isValid()) {
-                    cell->value = QString("%1年%2月%3日")
+                    cell->displayValue = QString("%1年%2月%3日")
                         .arg(date.year())
                         .arg(date.month())
                         .arg(date.day());
                 }
+                else {
+                    cell->displayValue = text;  // 无效日期保持原样
+                }
+
+                // 兼容性
+                cell->originalMarker = text;
 
                 qDebug() << QString("找到 #Date 标记: 行%1 列%2 → %3")
                     .arg(row).arg(col).arg(m_baseDate);
@@ -125,7 +132,8 @@ void DayReportParser::parseRow(int row)
         CellData* cell = m_model->getCell(row, col);
         if (!cell) continue;
 
-        QString text = cell->value.toString().trimmed();
+        // ===== 使用 scanText() =====
+        QString text = cell->scanText().trimmed();
         if (text.isEmpty()) continue;
 
         // 遇到 #t# 时间标记
@@ -134,8 +142,9 @@ void DayReportParser::parseRow(int row)
             m_currentTime = timeStr;
 
             cell->cellType = CellData::TimeMarker;
-            cell->originalMarker = text;
-            cell->value = timeStr.left(5);  // "00:00:00" → "00:00"
+            cell->markerText = text;                    // 保存原始标记
+            cell->displayValue = timeStr.left(5);       // 显示 "00:00"
+            cell->originalMarker = text;                // 兼容性
 
             qDebug() << QString("行%1 列%2: 时间标记 %3 → %4")
                 .arg(row).arg(col).arg(text).arg(m_currentTime);
@@ -154,8 +163,10 @@ void DayReportParser::parseRow(int row)
             }
 
             cell->cellType = CellData::DataMarker;
-            cell->originalMarker = text;
+            cell->markerText = text;                    // 保存原始标记
             cell->rtuId = rtuId;
+            cell->displayValue = text;                  // 初始显示标记
+            cell->originalMarker = text;                // 兼容性
 
             QueryTask task;
             task.cell = cell;
@@ -180,7 +191,7 @@ QTime DayReportParser::getTaskTime(const QueryTask& task)
     for (int col = 0; col < totalCols; ++col) {
         CellData* cell = m_model->getCell(row, col);
         if (cell && cell->cellType == CellData::TimeMarker) {
-            QString timeStr = cell->value.toString();
+            QString timeStr = cell->displayValue.toString();
             QTime time = QTime::fromString(timeStr, "HH:mm:ss");
             if (!time.isValid()) {
                 time = QTime::fromString(timeStr, "HH:mm");
@@ -289,13 +300,14 @@ void DayReportParser::restoreToTemplate()
     int nullCount = 0;
 
     for (const auto& task : m_queryTasks) {
-        if (!task.cell) {  
+        if (!task.cell) {
             nullCount++;
             qWarning() << QString("跳过无效单元格：行%1 列%2").arg(task.row).arg(task.col);
             continue;
         }
 
-        task.cell->value = task.cell->originalMarker;
+        // 还原为标记文本
+        task.cell->displayValue = task.cell->markerText;  // 显示原始标记
         task.cell->queryExecuted = false;
         task.cell->querySuccess = false;
         restoredCount++;
@@ -329,7 +341,7 @@ QString DayReportParser::findTimeForDataMarker(int row, int col)
     for (int c = 0; c < totalCols; ++c) {
         CellData* cell = m_model->getCell(row, c);
         if (cell && cell->cellType == CellData::TimeMarker) {
-            return cell->value.toString();
+            return cell->displayValue.toString();
         }
     }
     return QString();
