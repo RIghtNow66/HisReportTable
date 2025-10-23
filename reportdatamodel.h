@@ -150,6 +150,11 @@ public:
 
     void setDataColumnCount(int count) { m_dataColumnCount = count; }
 
+	// ===== 脏标记管理 =====
+    void markCellDirty(int row, int col);
+    void markRegionDirty(int startRow, int startCol, int endRow, int endCol);
+    void clearDirtyMarks();
+
 signals:
     void cellChanged(int row, int col);
     void editModeChanged(bool editMode);
@@ -215,6 +220,9 @@ private:
 
     void restoreTemplateReport();  // 拆分：模板模式还原
     void restoreUnifiedQuery();    // 拆分：统一查询还原
+
+    // 脏标记集合
+    QSet<QPair<int, int>> m_dirtyCells;  // 脏单元格集合
 
 };
 

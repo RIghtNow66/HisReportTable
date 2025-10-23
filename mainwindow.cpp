@@ -25,7 +25,6 @@ MainWindow::MainWindow(QWidget* parent)
     : QMainWindow(parent)
     , m_updating(false)
 	, m_formulaEditMode(false)
-    , m_filterModel(nullptr)
     , m_timeSettingsDialog(nullptr)
 {
     setupUI();
@@ -72,9 +71,6 @@ void MainWindow::setupToolBar()
 
     // 工具操作
     m_toolBar->addAction("查找", this, &MainWindow::onFind);
-    m_toolBar->addAction("筛选", this, &MainWindow::onFilter);
-    // 清楚筛选
-    m_toolBar->addAction("清除筛选", this, &MainWindow::onClearFilter);
 
     m_toolBar->addSeparator();
 }
@@ -181,7 +177,10 @@ void MainWindow::onFillDownFormula()
 {
     QModelIndex current = m_tableView->currentIndex();
     if (!current.isValid()) {
-        QMessageBox::information(this, "提示", "请先选中一个单元格");
+        QMessageBox msgBox(QMessageBox::Information, "提示", "请先选中一个单元格", QMessageBox::NoButton, this);
+        msgBox.setStandardButtons(QMessageBox::Ok);
+        msgBox.setButtonText(QMessageBox::Ok, "确定");
+        msgBox.exec();
         return;
     }
 
@@ -191,7 +190,10 @@ void MainWindow::onFillDownFormula()
     // 1. 检查当前单元格是否有公式
     const CellData* sourceCell = m_dataModel->getCell(currentRow, currentCol);
     if (!sourceCell || !sourceCell->hasFormula) {
-        QMessageBox::information(this, "提示", "当前单元格没有公式");
+        QMessageBox msgBox(QMessageBox::Information, "提示", "当前单元格没有公式", QMessageBox::NoButton, this);
+        msgBox.setStandardButtons(QMessageBox::Ok);
+        msgBox.setButtonText(QMessageBox::Ok, "确定");
+        msgBox.exec();
         return;
     }
 
@@ -199,19 +201,26 @@ void MainWindow::onFillDownFormula()
     int endRow = findFillEndRow(currentRow, currentCol);
 
     if (endRow <= currentRow) {
-        QMessageBox::information(this, "提示", "未找到可填充的范围（左侧列没有数据）");
+        QMessageBox msgBox(QMessageBox::Information, "提示", "未找到可填充的范围（左侧列没有数据）", QMessageBox::NoButton, this);
+        msgBox.setStandardButtons(QMessageBox::Ok);
+        msgBox.setButtonText(QMessageBox::Ok, "确定");
+        msgBox.exec();
         return;
     }
 
     // 3. 确认对话框
-    auto reply = QMessageBox::question(this, "确认填充",
+    QMessageBox msgBox(QMessageBox::Question, "确认填充",
         QString("是否将公式从第 %1 行填充到第 %2 行？")
         .arg(currentRow + 1)
         .arg(endRow + 1),
-        QMessageBox::Yes | QMessageBox::No,
-        QMessageBox::Yes);
+        QMessageBox::NoButton, this);
+    QPushButton* yesBtn = msgBox.addButton("是", QMessageBox::YesRole);
+    QPushButton* noBtn = msgBox.addButton("否", QMessageBox::NoRole);
+    msgBox.setDefaultButton(yesBtn); // 保持原始默认值为 Yes
 
-    if (reply == QMessageBox::No) {
+    msgBox.exec();
+
+    if (msgBox.clickedButton() == noBtn) {
         return;
     }
 
@@ -226,8 +235,12 @@ void MainWindow::onFillDownFormula()
         m_dataModel->setData(targetIndex, adjustedFormula, Qt::EditRole);
     }
 
-    QMessageBox::information(this, "完成",
-        QString("已将公式填充到第 %1 行").arg(endRow + 1));
+    QMessageBox msgBoxDone(QMessageBox::Information, "完成",
+        QString("已将公式填充到第 %1 行").arg(endRow + 1),
+        QMessageBox::NoButton, this);
+    msgBoxDone.setStandardButtons(QMessageBox::Ok);
+    msgBoxDone.setButtonText(QMessageBox::Ok, "确定");
+    msgBoxDone.exec();
 }
 
 int MainWindow::findFillEndRow(int currentRow, int currentCol)
@@ -308,9 +321,13 @@ void MainWindow::onImportExcel()
 
         // ===== 根据模式给出不同提示 =====
         if (m_dataModel->isUnifiedQueryMode()) {
-            QMessageBox::information(this, "统一查询模式",
+            QMessageBox msgBox(QMessageBox::Information, "统一查询模式",
                 "配置文件加载成功！\n\n"
-                "点击 [刷新数据] 按钮开始查询");
+                "点击 [刷新数据] 按钮开始查询",
+                QMessageBox::NoButton, this);
+            msgBox.setStandardButtons(QMessageBox::Ok);
+            msgBox.setButtonText(QMessageBox::Ok, "确定");
+            msgBox.exec();
         }
         else {
             ReportDataModel::TemplateType reportType = m_dataModel->getReportType();
@@ -325,9 +342,13 @@ void MainWindow::onImportExcel()
                     connect(parser, &BaseReportParser::asyncTaskCompleted,
                         this, [this](bool success, const QString& message) {
                             if (!success) {
-                                QMessageBox::critical(this, "预查询失败",
+                                QMessageBox msgBox(QMessageBox::Critical, "预查询失败",
                                     "数据加载失败！\n\n" + message +
-                                    "\n\n请检查数据库连接或稍后重试。");
+                                    "\n\n请检查数据库连接或稍后重试。",
+                                    QMessageBox::NoButton, this);
+                                msgBox.setStandardButtons(QMessageBox::Ok);
+                                msgBox.setButtonText(QMessageBox::Ok, "确定");
+                                msgBox.exec();
                                 return;
                             }
 
@@ -338,41 +359,58 @@ void MainWindow::onImportExcel()
                                 int totalCount = parser->getLastPrefetchTotalCount();
 
                                 if (totalCount == 0 || successCount == totalCount) {
-                                    QMessageBox::information(this, "预查询完成",
-                                        QString("数据加载完成！\n\n已缓存数据\n\n现在可以点击 [刷新数据] 填充报表。"));
+                                    QMessageBox msgBox(QMessageBox::Information, "预查询完成",
+                                        QString("数据加载完成！\n\n已缓存数据\n\n现在可以点击 [刷新数据] 填充报表。"),
+                                        QMessageBox::NoButton, this);
+                                    msgBox.setStandardButtons(QMessageBox::Ok);
+                                    msgBox.setButtonText(QMessageBox::Ok, "确定");
+                                    msgBox.exec();
                                 }
                                 else if (successCount > 0) {
                                     int failCount = totalCount - successCount;
-                                    QMessageBox::warning(this, "预查询部分完成",
+                                    QMessageBox msgBox(QMessageBox::Warning, "预查询部分完成",
                                         QString("数据加载部分完成！\n\n"
                                             "成功：%1/%2 次查询\n"
                                             "失败：%3 次查询\n\n"
                                             "部分数据可能显示为 N/A，建议检查数据库连接。")
-                                        .arg(successCount).arg(totalCount).arg(failCount));
+                                        .arg(successCount).arg(totalCount).arg(failCount),
+                                        QMessageBox::NoButton, this);
+                                    msgBox.setStandardButtons(QMessageBox::Ok);
+                                    msgBox.setButtonText(QMessageBox::Ok, "确定");
+                                    msgBox.exec();
                                 }
                             }
                         }, Qt::QueuedConnection);
                 }
             }
             else {
-                QMessageBox::information(this, "成功", "文件导入成功！");
+                QMessageBox msgBox(QMessageBox::Information, "成功", "文件导入成功！", QMessageBox::NoButton, this);
+                msgBox.setStandardButtons(QMessageBox::Ok);
+                msgBox.setButtonText(QMessageBox::Ok, "确定");
+                msgBox.exec();
             }
         }
     }
     else {
-        QMessageBox::warning(this, "错误", "文件加载或解析失败！\n\n请检查文件格式或模板标记是否正确。");
+        QMessageBox msgBox(QMessageBox::Warning, "错误", "文件加载或解析失败！\n\n请检查文件格式或模板标记是否正确。", QMessageBox::NoButton, this);
+        msgBox.setStandardButtons(QMessageBox::Ok);
+        msgBox.setButtonText(QMessageBox::Ok, "确定");
+        msgBox.exec();
     }
 }
 
 void MainWindow::onExportExcel()
 {
     if (m_dataModel->getAllCells().isEmpty()) {
-        QMessageBox::information(this, "提示", "当前没有可导出的数据");
+        QMessageBox msgBox(QMessageBox::Information, "提示", "当前没有可导出的数据", QMessageBox::NoButton, this);
+        msgBox.setStandardButtons(QMessageBox::Ok);
+        msgBox.setButtonText(QMessageBox::Ok, "确定");
+        msgBox.exec();
         return;
     }
 
     // 弹出选择对话框
-    QMessageBox msgBox;
+    QMessageBox msgBox(this);
     msgBox.setWindowTitle("选择导出模式");
     msgBox.setText("请选择导出类型：");
     msgBox.setInformativeText(
@@ -396,10 +434,18 @@ void MainWindow::onExportExcel()
 void MainWindow::exportData()
 {
     if (m_dataModel->isFirstRefresh()) {
-        auto reply = QMessageBox::question(this, "确认导出",
+        QMessageBox msgBox(QMessageBox::Question, "确认导出",
             "数据尚未刷新，建议先点击 [刷新数据]。\n是否继续？",
-            QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
-        if (reply == QMessageBox::No) return;
+            QMessageBox::NoButton, this);
+        QPushButton* yesBtn = msgBox.addButton("是", QMessageBox::YesRole);
+        QPushButton* noBtn = msgBox.addButton("否", QMessageBox::NoRole);
+        msgBox.setDefaultButton(noBtn); // 保持原始默认值为 No
+
+        msgBox.exec();
+
+        if (msgBox.clickedButton() == noBtn) {
+            return;
+        }
     }
 
     QString fileName = QFileDialog::getSaveFileName(this,
@@ -407,10 +453,16 @@ void MainWindow::exportData()
     if (fileName.isEmpty()) return;
 
     if (m_dataModel->saveToExcel(fileName, ReportDataModel::EXPORT_DATA)) {
-        QMessageBox::information(this, "成功", "数据导出成功！");
+        QMessageBox msgBox(QMessageBox::Information, "成功", "数据导出成功！", QMessageBox::NoButton, this);
+        msgBox.setStandardButtons(QMessageBox::Ok);
+        msgBox.setButtonText(QMessageBox::Ok, "确定");
+        msgBox.exec();
     }
     else {
-        QMessageBox::warning(this, "错误", "数据导出失败！");
+        QMessageBox msgBox(QMessageBox::Warning, "错误", "数据导出失败！", QMessageBox::NoButton, this);
+        msgBox.setStandardButtons(QMessageBox::Ok);
+        msgBox.setButtonText(QMessageBox::Ok, "确定");
+        msgBox.exec();
     }
 }
 
@@ -421,10 +473,16 @@ void MainWindow::exportTemplate()
     if (fileName.isEmpty()) return;
 
     if (m_dataModel->saveToExcel(fileName, ReportDataModel::EXPORT_TEMPLATE)) {
-        QMessageBox::information(this, "成功", "模板导出成功！");
+        QMessageBox msgBox(QMessageBox::Information, "成功", "模板导出成功！", QMessageBox::NoButton, this);
+        msgBox.setStandardButtons(QMessageBox::Ok);
+        msgBox.setButtonText(QMessageBox::Ok, "确定");
+        msgBox.exec();
     }
     else {
-        QMessageBox::warning(this, "错误", "模板导出失败！");
+        QMessageBox msgBox(QMessageBox::Warning, "错误", "模板导出失败！", QMessageBox::NoButton, this);
+        msgBox.setStandardButtons(QMessageBox::Ok);
+        msgBox.setButtonText(QMessageBox::Ok, "确定");
+        msgBox.exec();
     }
 }
 
@@ -499,45 +557,12 @@ void MainWindow::onFindNext()
     }
 
     if (!found) {
-        QMessageBox::information(this, "查找", "未找到匹配的内容");
+        QMessageBox msgBox(QMessageBox::Information, "查找", "未找到匹配的内容", QMessageBox::NoButton, this);
+        msgBox.setStandardButtons(QMessageBox::Ok);
+        msgBox.setButtonText(QMessageBox::Ok, "确定");
+        msgBox.exec();
     }
 }
-
-void MainWindow::onFilter()
-{
-    bool ok;
-    QString filterText = QInputDialog::getText(this, "筛选",
-        "请输入筛选条件（支持通配符*和?）:", QLineEdit::Normal, "", &ok);
-
-    if (ok && !filterText.isEmpty()) {
-        if (!m_filterModel) {
-            m_filterModel = new QSortFilterProxyModel(this);
-            m_filterModel->setSourceModel(m_dataModel);
-            m_filterModel->setFilterKeyColumn(-1); // 搜索所有列
-            m_tableView->setModel(m_filterModel);
-        }
-
-        // 转换通配符为正则表达式
-        QString regexPattern = QRegularExpression::escape(filterText);
-        regexPattern.replace("\\*", ".*");
-        regexPattern.replace("\\?", ".");
-
-        m_filterModel->setFilterRegularExpression(QRegularExpression(regexPattern, QRegularExpression::CaseInsensitiveOption));
-
-        //statusBar()->showMessage(QString("筛选结果：%1 行").arg(m_filterModel->rowCount()), 3000);
-    }
-}
-
-void MainWindow::onClearFilter()
-{
-    if (m_filterModel) {
-        m_tableView->setModel(m_dataModel);
-        delete m_filterModel;
-        m_filterModel = nullptr;
-        //statusBar()->showMessage("已清除筛选", 2000);
-    }
-}
-
 
 void MainWindow::onCurrentCellChanged(const QModelIndex& current, const QModelIndex& previous)
 {
@@ -709,7 +734,10 @@ void MainWindow::updateFormulaBar(const QModelIndex& index)
 void MainWindow::onInsertRow()
 {
     if (!m_currentIndex.isValid()) {
-        QMessageBox::information(this, "提示", "请先选中一个单元格");
+        QMessageBox msgBox(QMessageBox::Information, "提示", "请先选中一个单元格", QMessageBox::NoButton, this);
+        msgBox.setStandardButtons(QMessageBox::Ok);
+        msgBox.setButtonText(QMessageBox::Ok, "确定");
+        msgBox.exec();
         return;
     }
 
@@ -726,7 +754,10 @@ void MainWindow::onInsertRow()
 void MainWindow::onInsertColumn()
 {
     if (!m_currentIndex.isValid()) {
-        QMessageBox::information(this, "提示", "请先选中一个单元格");
+        QMessageBox msgBox(QMessageBox::Information, "提示", "请先选中一个单元格", QMessageBox::NoButton, this);
+        msgBox.setStandardButtons(QMessageBox::Ok);
+        msgBox.setButtonText(QMessageBox::Ok, "确定");
+        msgBox.exec();
         return;
     }
 
@@ -830,23 +861,33 @@ void MainWindow::onUnifiedQueryCompleted(bool success, QString message)
         m_dataModel->notifyDataChanged();
 
         // ===== 补充：显示详细成功消息 =====
-        QMessageBox::information(this, "查询成功",
+        QMessageBox msgBox(QMessageBox::Information, "查询成功",
             QString("数据查询完成！\n\n"
                 "时间点：%1 个\n"
                 "数据列：%2 个\n\n"
                 "提示：时间列和数据列为只读，您可以在右侧添加自定义列和公式。")
             .arg(timeAxis.size())
-            .arg(config.columns.size()));
+            .arg(config.columns.size()),
+            QMessageBox::NoButton, this);
+        msgBox.setStandardButtons(QMessageBox::Ok);
+        msgBox.setButtonText(QMessageBox::Ok, "确定");
+        msgBox.exec();
     }
     else {
-        QMessageBox::warning(this, "查询失败", message);
+        QMessageBox msgBox(QMessageBox::Warning, "查询失败", message, QMessageBox::NoButton, this);
+        msgBox.setStandardButtons(QMessageBox::Ok);
+        msgBox.setButtonText(QMessageBox::Ok, "确定");
+        msgBox.exec();
     }
 }
 
 void MainWindow::onRefreshData()
 {
     if (m_dataModel->getAllCells().isEmpty()) {
-        QMessageBox::information(this, "提示", "当前没有可刷新的数据。\n\n请先通过 [导入] 按钮加载一个报表模板。");
+        QMessageBox msgBox(QMessageBox::Information, "提示", "当前没有可刷新的数据。\n\n请先通过 [导入] 按钮加载一个报表模板。", QMessageBox::NoButton, this);
+        msgBox.setStandardButtons(QMessageBox::Ok);
+        msgBox.setButtonText(QMessageBox::Ok, "确定");
+        msgBox.exec();
         return;
     }
 
@@ -885,7 +926,10 @@ void MainWindow::onRefreshData()
             if (reply == QMessageBox::Yes) {
                 // 只计算公式
                 m_dataModel->recalculateAllFormulas();
-                QMessageBox::information(this, "完成", "公式计算完成！");
+                QMessageBox msgBoxDone(QMessageBox::Information, "完成", "公式计算完成！", QMessageBox::NoButton, this);
+                msgBoxDone.setStandardButtons(QMessageBox::Ok);
+                msgBoxDone.setButtonText(QMessageBox::Ok, "确定");
+                msgBoxDone.exec();
                 return;
             }
             // 否则继续弹出时间选择框
@@ -929,7 +973,10 @@ void MainWindow::onRefreshData()
 
         // 验证配置
         if (!config.isValid()) {
-            QMessageBox::warning(this, "错误", "时间配置无效！");
+            QMessageBox msgBox(QMessageBox::Warning, "错误", "时间配置无效！", QMessageBox::NoButton, this);
+            msgBox.setStandardButtons(QMessageBox::Ok);
+            msgBox.setButtonText(QMessageBox::Ok, "确定");
+            msgBox.exec();
             return;
         }
 
@@ -988,15 +1035,22 @@ void MainWindow::onRefreshData()
     if (type == ReportDataModel::DAY_REPORT || type == ReportDataModel::MONTH_REPORT) {
         BaseReportParser* parser = m_dataModel->getParser();
         if (!parser || !parser->isValid()) {
-            QMessageBox::warning(this, "错误", "报表解析器未初始化或模板无效！");
+            QMessageBox msgBox(QMessageBox::Warning, "错误", "报表解析器未初始化或模板无效！", QMessageBox::NoButton, this);
+            msgBox.setStandardButtons(QMessageBox::Ok);
+            msgBox.setButtonText(QMessageBox::Ok, "确定");
+            msgBox.exec();
             return;
         }
 
-        // ===== 【修复】检查预查询状态 =====
+        // ===== 检查预查询状态 =====
         if (parser->isAsyncTaskRunning()) {
-            QMessageBox::information(this, "请稍候",
+            QMessageBox msgBox(QMessageBox::Information, "请稍候",
                 "数据正在后台加载中，请等待预查询完成后再刷新。\n\n"
-                "预查询完成后会自动弹窗提示。");
+                "预查询完成后会自动弹窗提示。",
+                QMessageBox::NoButton, this);
+            msgBox.setStandardButtons(QMessageBox::Ok);
+            msgBox.setButtonText(QMessageBox::Ok, "确定");
+            msgBox.exec();
             return;
         }
 
@@ -1035,7 +1089,10 @@ void MainWindow::onRefreshData()
         disconnect(parser, nullptr, &progress, nullptr);
 
         if (!completed && progress.wasCanceled()) {
-            QMessageBox::warning(this, "已取消", "数据刷新操作已被用户取消。");
+            QMessageBox msgBox(QMessageBox::Warning, "已取消", "数据刷新操作已被用户取消。", QMessageBox::NoButton, this);
+            msgBox.setStandardButtons(QMessageBox::Ok);
+            msgBox.setButtonText(QMessageBox::Ok, "确定");
+            msgBox.exec();
             m_dataModel->restoreToTemplate();
         }
     }
@@ -1047,14 +1104,20 @@ void MainWindow::onRefreshData()
 void MainWindow::onRestoreConfig()
 {
     if (m_dataModel->rowCount() == 0 || m_dataModel->columnCount() == 0) {
-        QMessageBox::information(this, "提示", "当前没有可还原的配置。");
+        QMessageBox msgBox(QMessageBox::Information, "提示", "当前没有可还原的配置。", QMessageBox::NoButton, this);
+        msgBox.setStandardButtons(QMessageBox::Ok);
+        msgBox.setButtonText(QMessageBox::Ok, "确定");
+        msgBox.exec();
         return;
     }
 
     // ===== 统一查询模式：特殊处理 =====
     if (m_dataModel->isUnifiedQueryMode()) {
         if (!m_dataModel->hasUnifiedQueryData()) {
-            QMessageBox::information(this, "提示", "当前已经是配置文件状态，无需还原。");
+            QMessageBox msgBox(QMessageBox::Information, "提示", "当前已经是配置文件状态，无需还原。", QMessageBox::NoButton, this);
+            msgBox.setStandardButtons(QMessageBox::Ok);
+            msgBox.setButtonText(QMessageBox::Ok, "确定");
+            msgBox.exec();
             return;
         }
 
@@ -1065,19 +1128,29 @@ void MainWindow::onRestoreConfig()
 
     // ===== 模板模式：保持原有逻辑 =====
     if (m_dataModel->isFirstRefresh() && !m_dataModel->hasExecutedQueries()) {
-        QMessageBox::information(this, "提示", "当前已经是配置文件状态，无需还原。");
+        QMessageBox msgBox(QMessageBox::Information, "提示", "当前已经是配置文件状态，无需还原。", QMessageBox::NoButton, this);
+        msgBox.setStandardButtons(QMessageBox::Ok);
+        msgBox.setButtonText(QMessageBox::Ok, "确定");
+        msgBox.exec();
         return;
     }
 
     // 弹出确认对话框
-    QMessageBox::StandardButton reply;
-    reply = QMessageBox::question(this, "确认",
+    QMessageBox msgBox(QMessageBox::Question, "确认",
         "是否要将报表还原到模板的初始状态？\n\n所有已填充的数据和计算结果都将被清除。",
-        QMessageBox::Yes | QMessageBox::No);
+        QMessageBox::NoButton, this);
+    QPushButton* yesBtn = msgBox.addButton("是", QMessageBox::YesRole);
+    QPushButton* noBtn = msgBox.addButton("否", QMessageBox::NoRole);
+    msgBox.setDefaultButton(noBtn); // 默认为 "否"
 
-    if (reply == QMessageBox::Yes) {
+    msgBox.exec();
+
+    if (msgBox.clickedButton() == yesBtn) {
         m_dataModel->restoreToTemplate();
-        QMessageBox::information(this, "完成", "配置已成功还原。");
+        QMessageBox msgBoxDone(QMessageBox::Information, "完成", "配置已成功还原。", QMessageBox::NoButton, this);
+        msgBoxDone.setStandardButtons(QMessageBox::Ok);
+        msgBoxDone.setButtonText(QMessageBox::Ok, "确定");
+        msgBoxDone.exec();
     }
 }
 

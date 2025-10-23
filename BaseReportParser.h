@@ -69,6 +69,17 @@ public:
         }
     };
 
+    struct DataMarkerInfo {
+        int row;           // 行号
+        int col;           // 列号
+        QString rtuId;     // RTU编号
+
+        // 用于比较的操作符
+        bool operator==(const DataMarkerInfo& other) const {
+            return row == other.row && col == other.col;
+        }
+    };
+
 public:
     explicit BaseReportParser(ReportDataModel* model, QObject* parent = nullptr);
     virtual ~BaseReportParser();
@@ -100,6 +111,8 @@ public:
 
     int getLastPrefetchSuccessCount() const { return m_lastPrefetchSuccessCount; }
     int getLastPrefetchTotalCount() const { return m_lastPrefetchTotalCount; }
+
+    void rescanDirtyCells(const QSet<QPair<int, int>>& dirtyCells);
 
 signals:
     // ===== 同步解析信号 =====
@@ -247,6 +260,11 @@ protected:
     int m_lastPrefetchTotalCount;
 
     EditState m_editState;
+
+    QList<DataMarkerInfo> m_dataMarkerCells;
+
+    // 记录已扫描的绑定信息哈希
+    QHash<QPair<int, int>, QString> m_scannedMarkers;  // 位置 -> 绑定标记
 
 private:
     QDateTime m_cacheTimestamp;                        // 新增

@@ -11,7 +11,6 @@
 #include <QMenu>
 #include <QDialog>
 #include <QPushButton>
-#include <QSortFilterProxyModel>
 #include <QDateTime> 
 #include <QGroupBox>
 #include <QRadioButton>
@@ -41,8 +40,6 @@ private slots:
     // 工具操作
     void onFind();
     void onFindNext();
-    void onFilter();
-    void onClearFilter();
 
     void onCurrentCellChanged(const QModelIndex& current, const QModelIndex& previous);
     void onFormulaEditFinished();
@@ -82,7 +79,6 @@ private:
     // 表格
     EnhancedTableView* m_tableView;
     ReportDataModel* m_dataModel;
-    QSortFilterProxyModel* m_filterModel;
 
     // 查找对话框
     QDialog* m_findDialog;

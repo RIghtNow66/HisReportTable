@@ -245,6 +245,7 @@ QDateTime MonthReportParser::constructDateTime(const QString& date, const QStrin
 
 bool MonthReportParser::executeQueries(QProgressDialog* progress)
 {
+
     if (m_queryTasks.isEmpty()) {
         return true;
     }

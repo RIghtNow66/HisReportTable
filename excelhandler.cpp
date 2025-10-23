@@ -22,7 +22,10 @@
 bool ExcelHandler::loadFromFile(const QString& fileName, ReportDataModel* model)
 {
     if (fileName.isEmpty() || !model) {
-        QMessageBox::warning(nullptr, "错误", "参数无效");
+        QMessageBox msgBox(QMessageBox::Warning, "错误", "参数无效", QMessageBox::NoButton, nullptr);
+        msgBox.setStandardButtons(QMessageBox::Ok);
+        msgBox.setButtonText(QMessageBox::Ok, "确定");
+        msgBox.exec();
         return false;
     }
     if (!isValidExcelFile(fileName)) {
@@ -38,7 +41,10 @@ bool ExcelHandler::loadFromFile(const QString& fileName, ReportDataModel* model)
 
     QXlsx::Document xlsx(fileName);
     if (!xlsx.load()) {
-        QMessageBox::warning(nullptr, "错误", "无法打开Excel文件");
+        QMessageBox msgBox(QMessageBox::Warning, "错误", "无法打开Excel文件", QMessageBox::NoButton, nullptr);
+        msgBox.setStandardButtons(QMessageBox::Ok);
+        msgBox.setButtonText(QMessageBox::Ok, "确定");
+        msgBox.exec();
         return false;
     }
     progress->setValue(10);
@@ -46,7 +52,10 @@ bool ExcelHandler::loadFromFile(const QString& fileName, ReportDataModel* model)
 
     QXlsx::Worksheet* worksheet = static_cast<QXlsx::Worksheet*>(xlsx.currentSheet());
     if (!worksheet) {
-        QMessageBox::warning(nullptr, "错误", "无法读取工作表");
+        QMessageBox msgBox(QMessageBox::Warning, "错误", "无法读取工作表", QMessageBox::NoButton, nullptr);
+        msgBox.setStandardButtons(QMessageBox::Ok);
+        msgBox.setButtonText(QMessageBox::Ok, "确定");
+        msgBox.exec();
         return false;
     }
 
@@ -189,7 +198,10 @@ void ExcelHandler::loadRowColumnSizes(QXlsx::Worksheet* worksheet, ReportDataMod
 bool ExcelHandler::saveToFile(const QString& fileName, ReportDataModel* model, ExportMode mode)
 {
     if (fileName.isEmpty() || !model) {
-        QMessageBox::warning(nullptr, "错误", "参数无效");
+        QMessageBox msgBox(QMessageBox::Warning, "错误", "参数无效", QMessageBox::NoButton, nullptr);
+        msgBox.setStandardButtons(QMessageBox::Ok);
+        msgBox.setButtonText(QMessageBox::Ok, "确定");
+        msgBox.exec();
         return false;
     }
 
@@ -206,7 +218,10 @@ bool ExcelHandler::saveToFile(const QString& fileName, ReportDataModel* model, E
     QXlsx::Document xlsx;
     QXlsx::Worksheet* worksheet = xlsx.currentWorksheet();
     if (!worksheet) {
-        QMessageBox::warning(nullptr, "错误", "无法创建Excel工作表");
+        QMessageBox msgBox(QMessageBox::Warning, "错误", "无法创建Excel工作表", QMessageBox::NoButton, nullptr);
+        msgBox.setStandardButtons(QMessageBox::Ok);
+        msgBox.setButtonText(QMessageBox::Ok, "确定");
+        msgBox.exec();
         return false;
     }
 
@@ -315,7 +330,10 @@ bool ExcelHandler::saveToFile(const QString& fileName, ReportDataModel* model, E
     if (progress->wasCanceled()) return false;
 
     if (!xlsx.saveAs(actualFileName)) {
-        QMessageBox::warning(nullptr, "保存失败", QString("无法保存文件到：%1").arg(actualFileName));
+        QMessageBox msgBox(QMessageBox::Warning, "保存失败", QString("无法保存文件到：%1").arg(actualFileName), QMessageBox::NoButton, nullptr);
+        msgBox.setStandardButtons(QMessageBox::Ok);
+        msgBox.setButtonText(QMessageBox::Ok, "确定");
+        msgBox.exec();
         return false;
     }
 
@@ -575,11 +593,17 @@ bool ExcelHandler::isValidExcelFile(const QString& fileName)
 {
     QFileInfo fileInfo(fileName);
     if (!fileInfo.exists()) {
-        QMessageBox::warning(nullptr, "错误", QString("文件不存在：%1").arg(fileName));
+        QMessageBox msgBox(QMessageBox::Warning, "错误", QString("文件不存在：%1").arg(fileName), QMessageBox::NoButton, nullptr);
+        msgBox.setStandardButtons(QMessageBox::Ok);
+        msgBox.setButtonText(QMessageBox::Ok, "确定");
+        msgBox.exec();
         return false;
     }
     if (!fileInfo.isReadable()) {
-        QMessageBox::warning(nullptr, "错误", QString("无法读取文件：%1").arg(fileName));
+        QMessageBox msgBox(QMessageBox::Warning, "错误", QString("无法读取文件：%1").arg(fileName), QMessageBox::NoButton, nullptr);
+        msgBox.setStandardButtons(QMessageBox::Ok);
+        msgBox.setButtonText(QMessageBox::Ok, "确定");
+        msgBox.exec();
         return false;
     }
     return true;
@@ -616,7 +640,10 @@ bool ExcelHandler::saveUnifiedQueryToFile(const QString& fileName,
     ExportMode mode)
 {
     if (fileName.isEmpty() || !model) {
-        QMessageBox::warning(nullptr, "错误", "参数无效");
+        QMessageBox msgBox(QMessageBox::Warning, "错误", "参数无效", QMessageBox::NoButton, nullptr);
+        msgBox.setStandardButtons(QMessageBox::Ok);
+        msgBox.setButtonText(QMessageBox::Ok, "确定");
+        msgBox.exec();
         return false;
     }
 
@@ -634,7 +661,10 @@ bool ExcelHandler::saveUnifiedQueryToFile(const QString& fileName,
     QXlsx::Document xlsx;
     QXlsx::Worksheet* worksheet = xlsx.currentWorksheet();
     if (!worksheet) {
-        QMessageBox::warning(nullptr, "错误", "无法创建Excel工作表");
+        QMessageBox msgBox(QMessageBox::Warning, "错误", "无法创建Excel工作表", QMessageBox::NoButton, nullptr);
+        msgBox.setStandardButtons(QMessageBox::Ok);
+        msgBox.setButtonText(QMessageBox::Ok, "确定");
+        msgBox.exec();
         return false;
     }
 
@@ -709,8 +739,11 @@ bool ExcelHandler::saveUnifiedQueryToFile(const QString& fileName,
     progress->setValue(95);
 
     if (!xlsx.saveAs(actualFileName)) {
-        QMessageBox::warning(nullptr, "保存失败",
-            QString("无法保存文件到：%1").arg(actualFileName));
+        QMessageBox msgBox(QMessageBox::Warning, "保存失败",
+            QString("无法保存文件到：%1").arg(actualFileName), QMessageBox::NoButton, nullptr);
+        msgBox.setStandardButtons(QMessageBox::Ok);
+        msgBox.setButtonText(QMessageBox::Ok, "确定");
+        msgBox.exec();
         return false;
     }
 

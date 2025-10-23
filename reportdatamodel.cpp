@@ -13,6 +13,7 @@
 #include <cmath>               // 用于 std::isnan, std::isinf
 #include <QMessageBox>
 #include <QRegularExpression>
+#include <QPushButton>
 
 #include "reportdatamodel.h"
 #include "formulaengine.h"
@@ -390,14 +391,18 @@ void ReportDataModel::restoreUnifiedQuery()
         qDebug() << QString("检测到 %1 个用户公式").arg(formulaCount);
 
         // ===== 弹出警告对话框 =====
-        auto reply = QMessageBox::warning(nullptr, "确认还原配置",
+        QMessageBox msgBox(QMessageBox::Warning, "确认还原配置",
             QString("检测到您添加了 %1 个自定义公式/列。\n\n"
                 "还原配置将清除所有查询数据和自定义公式。\n\n"
                 "是否继续？").arg(formulaCount),
-            QMessageBox::Yes | QMessageBox::No,
-            QMessageBox::No);
+            QMessageBox::NoButton, nullptr); // 注意：父窗口为 nullptr
+        QPushButton* yesBtn = msgBox.addButton("是", QMessageBox::YesRole);
+        QPushButton* noBtn = msgBox.addButton("否", QMessageBox::NoRole);
+        msgBox.setDefaultButton(noBtn); // 保持原始默认值为 No
 
-        if (reply == QMessageBox::No) {
+        msgBox.exec();
+
+        if (msgBox.clickedButton() == noBtn) {
             qDebug() << "用户取消还原";
             return;
         }
@@ -436,7 +441,10 @@ void ReportDataModel::restoreUnifiedQuery()
         qDebug() << "统一查询已还原到配置阶段";
         notifyDataChanged();
 
-        QMessageBox::information(nullptr, "还原完成", "已还原到配置文件状态。");
+        QMessageBox msgBoxDone(QMessageBox::Information, "还原完成", "已还原到配置文件状态。", QMessageBox::NoButton, nullptr);
+        msgBoxDone.setStandardButtons(QMessageBox::Ok);
+        msgBoxDone.setButtonText(QMessageBox::Ok, "确定");
+        msgBoxDone.exec();
     }
 }
 void ReportDataModel::restoreToTemplate()
@@ -606,11 +614,17 @@ bool ReportDataModel::refreshTemplateReport(QProgressDialog* progress)
 
     switch (changeType) {
     case NO_CHANGE:
+    {
         changeMsg = "数据已是最新，无需刷新。";
-        QMessageBox::information(nullptr, "无需刷新", changeMsg);
+
+        QMessageBox msgBox(QMessageBox::Information, "无需刷新", changeMsg, QMessageBox::NoButton, nullptr);
+        msgBox.setStandardButtons(QMessageBox::Ok);
+        msgBox.setButtonText(QMessageBox::Ok, "确定");
+        msgBox.exec();
+
         saveRefreshSnapshot();
         return true;
-
+    }
     case FORMULA_ONLY: {
         int newFormulaCount = 0;
         for (auto it = m_cells.constBegin(); it != m_cells.constEnd(); ++it) {
@@ -684,10 +698,15 @@ bool ReportDataModel::refreshTemplateReport(QProgressDialog* progress)
 
     // ===== 【步骤2】用户确认（首次刷新跳过） =====
     if (!m_isFirstRefresh && !changeMsg.isEmpty()) {
-        auto reply = QMessageBox::question(nullptr, "确认刷新", changeMsg,
-            QMessageBox::Yes | QMessageBox::No,
-            QMessageBox::Yes);
-        if (reply == QMessageBox::No) {
+        QMessageBox msgBox(QMessageBox::Question, "确认刷新", changeMsg,
+            QMessageBox::NoButton, nullptr); // 注意：父窗口为 nullptr
+        QPushButton* yesBtn = msgBox.addButton("是", QMessageBox::YesRole);
+        QPushButton* noBtn = msgBox.addButton("否", QMessageBox::NoRole);
+        msgBox.setDefaultButton(yesBtn); // 保持原始默认值为 Yes
+
+        msgBox.exec();
+
+        if (msgBox.clickedButton() == noBtn) {
             return false;
         }
     }
@@ -703,6 +722,27 @@ bool ReportDataModel::refreshTemplateReport(QProgressDialog* progress)
     // ===== 【步骤4】执行查询操作 =====
     bool completedSuccessfully = false;
     int actualSuccessCount = 0;
+
+    if (needQuery && m_parser) {
+        // 【根据脏标记情况决定扫描策略
+        if (m_dirtyCells.isEmpty()) {
+            qDebug() << "无脏单元格，使用缓存数据";
+        }
+        else if (m_dirtyCells.size() < 20) {  // 阈值可调整
+            qDebug() << "脏单元格较少，执行增量扫描";
+            m_parser->rescanDirtyCells(m_dirtyCells);
+        }
+        else {
+            qDebug() << "脏单元格较多，执行全量扫描";
+            m_parser->scanAndParse();
+        }
+
+        // 执行查询（可能是增量查询）
+        completedSuccessfully = m_parser->executeQueries(progress);
+
+        // 清理脏标记
+        clearDirtyMarks();
+    }
 
     if (needQuery) {
         // 需要查询数据
@@ -846,6 +886,9 @@ bool ReportDataModel::setData(const QModelIndex& index, const QVariant& value, i
 
     emit dataChanged(index, index, { role });
     emit cellChanged(index.row(), index.column());
+
+    markCellDirty(index.row(), index.column());
+
     return true;
 }
 
@@ -1004,6 +1047,12 @@ bool ReportDataModel::insertRows(int row, int count, const QModelIndex& parent)
     }
     m_cells = newCells;
     m_maxRow += count;
+
+    for (int r = row; r < row + count; ++r) {
+        for (int c = 0; c < m_maxCol; ++c) {
+            markCellDirty(r, c);
+        }
+    }
 
     endInsertRows();
     return true;
@@ -1671,21 +1720,29 @@ bool ReportDataModel::refreshUnifiedQuery(QProgressDialog* progress)
         qDebug() << "[统一查询] 仅增量计算公式";
         recalculateAllFormulas();
 
-        QMessageBox::information(nullptr, "公式计算完成",
+        QMessageBox msgBox(QMessageBox::Information, "公式计算完成",
             "新增公式已计算完成！\n\n"
-            "如需重新查询数据，请再次点击刷新。");
+            "如需重新查询数据，请再次点击刷新。",
+            QMessageBox::NoButton, nullptr);
+        msgBox.setStandardButtons(QMessageBox::Ok);
+        msgBox.setButtonText(QMessageBox::Ok, "确定");
+        msgBox.exec();
         return true;
     }
 
     if (changeType == UQ_NO_CHANGE && hasUnifiedQueryData()) {
         // 已有数据且无变化，提示用户
-        auto reply = QMessageBox::question(nullptr, "确认刷新",
+        QMessageBox msgBox(QMessageBox::Question, "确认刷新",
             "当前数据无变化。\n\n"
             "是否重新查询数据？",
-            QMessageBox::Yes | QMessageBox::No,
-            QMessageBox::No);
+            QMessageBox::NoButton, nullptr); // 注意：父窗口为 nullptr
+        QPushButton* yesBtn = msgBox.addButton("是", QMessageBox::YesRole);
+        QPushButton* noBtn = msgBox.addButton("否", QMessageBox::NoRole);
+        msgBox.setDefaultButton(noBtn); // 保持原始默认值为 No
 
-        if (reply == QMessageBox::No) {
+        msgBox.exec();
+
+        if (msgBox.clickedButton() == noBtn) {
             return false;
         }
     }
@@ -1900,4 +1957,23 @@ ReportDataModel::UnifiedQueryChangeType ReportDataModel::detectUnifiedQueryChang
 
     qDebug() << "[统一查询] 无变化";
     return UQ_NO_CHANGE;
+}
+
+void ReportDataModel::markCellDirty(int row, int col)
+{
+    m_dirtyCells.insert(qMakePair(row, col));
+}
+
+void ReportDataModel::markRegionDirty(int startRow, int startCol, int endRow, int endCol)
+{
+    for (int r = startRow; r <= endRow; ++r) {
+        for (int c = startCol; c <= endCol; ++c) {
+            m_dirtyCells.insert(qMakePair(r, c));
+        }
+    }
+}
+
+void ReportDataModel::clearDirtyMarks()
+{
+    m_dirtyCells.clear();
 }

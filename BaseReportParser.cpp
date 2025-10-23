@@ -511,3 +511,74 @@ void BaseReportParser::invalidateCache()
     qDebug() << "使缓存失效";
     clearCache();
 }
+
+void BaseReportParser::rescanDirtyCells(const QSet<QPair<int, int>>& dirtyCells)
+{
+    qDebug() << "开始增量扫描，脏单元格数量：" << dirtyCells.size();
+
+    int newCount = 0;
+    int modifiedCount = 0;
+    int removedCount = 0;
+
+    // 1. 扫描脏单元格，检测新增或修改
+    for (const auto& pos : dirtyCells) {
+        int row = pos.first;
+        int col = pos.second;
+
+        CellData* cell = m_model->getCell(row, col);
+        if (!cell) continue;
+
+        QString text = cell->displayText();
+
+        // 检查是否是数据标记
+        if (text.startsWith("#d#")) {
+            QString rtuId = text.mid(3).trimmed();
+            QString oldMarker = m_scannedMarkers.value(pos);
+
+            if (oldMarker.isEmpty()) {
+                // 新增的数据标记
+                m_dataMarkerCells.append({ row, col, rtuId });
+                m_scannedMarkers.insert(pos, rtuId);
+                newCount++;
+                qDebug() << QString("  新增数据标记：行%1列%2，RTU=%3").arg(row).arg(col).arg(rtuId);
+            }
+            else if (oldMarker != rtuId) {
+                // 修改的数据标记
+                // 【修正】使用迭代器删除旧的
+                for (auto it = m_dataMarkerCells.begin(); it != m_dataMarkerCells.end(); ) {
+                    if (it->row == row && it->col == col) {
+                        it = m_dataMarkerCells.erase(it);
+                    }
+                    else {
+                        ++it;
+                    }
+                }
+                // 添加新的
+                m_dataMarkerCells.append({ row, col, rtuId });
+                m_scannedMarkers.insert(pos, rtuId);
+                modifiedCount++;
+                qDebug() << QString("  修改数据标记：行%1列%2，%3 -> %4").arg(row).arg(col).arg(oldMarker).arg(rtuId);
+            }
+        }
+        else {
+            // 单元格不再是数据标记
+            if (m_scannedMarkers.contains(pos)) {
+                // 【修正】使用迭代器移除旧的数据标记记录
+                for (auto it = m_dataMarkerCells.begin(); it != m_dataMarkerCells.end(); ) {
+                    if (it->row == row && it->col == col) {
+                        it = m_dataMarkerCells.erase(it);
+                    }
+                    else {
+                        ++it;
+                    }
+                }
+                m_scannedMarkers.remove(pos);
+                removedCount++;
+                qDebug() << QString("  移除数据标记：行%1列%2").arg(row).arg(col);
+            }
+        }
+    }
+
+    qDebug() << QString("增量扫描完成：新增%1，修改%2，移除%3")
+        .arg(newCount).arg(modifiedCount).arg(removedCount);
+}
