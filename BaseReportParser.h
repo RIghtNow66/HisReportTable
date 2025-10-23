@@ -112,7 +112,9 @@ public:
     int getLastPrefetchSuccessCount() const { return m_lastPrefetchSuccessCount; }
     int getLastPrefetchTotalCount() const { return m_lastPrefetchTotalCount; }
 
-    void rescanDirtyCells(const QSet<QPair<int, int>>& dirtyCells);
+    void rescanDirtyCells(const QSet<QPoint>& dirtyCells);
+
+    bool findInCache(const QString& rtuId, int64_t timestamp, float& value);
 
 signals:
     // ===== 同步解析信号 =====
@@ -129,6 +131,8 @@ signals:
 
     // ===== 错误信号 =====
     void databaseError(QString errorMessage);  // 数据库连接/查询错误
+
+    virtual QString findTimeForDataMarker(int row, int col) = 0;  // 纯虚函数，子类实现
 
 protected:
     // ===== 子类需要实现的纯虚函数 =====
@@ -170,15 +174,6 @@ protected:
     virtual bool runAsyncTask() = 0;
 
     // ===== 通用工具函数（子类可直接使用） =====
-
-    /**
-     * @brief 从缓存中查找数据
-     * @param rtuId RTU编号
-     * @param timestamp 时间戳（毫秒）
-     * @param value 输出参数，找到的值
-     * @return 是否找到
-     */
-    bool findInCache(const QString& rtuId, int64_t timestamp, float& value);
 
     /**
      * @brief 执行单次查询
@@ -264,7 +259,7 @@ protected:
     QList<DataMarkerInfo> m_dataMarkerCells;
 
     // 记录已扫描的绑定信息哈希
-    QHash<QPair<int, int>, QString> m_scannedMarkers;  // 位置 -> 绑定标记
+    QHash<QPoint, QString> m_scannedMarkers;  // 位置 -> 绑定标记
 
 private:
     QDateTime m_cacheTimestamp;                        // 新增

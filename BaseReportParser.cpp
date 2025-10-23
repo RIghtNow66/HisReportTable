@@ -84,6 +84,10 @@ void BaseReportParser::onAsyncTaskFinished()
     }
     else if (success) {
         message = "后台任务成功完成。";
+        if (m_model) {
+            m_model->markAllCellsClean();
+            qDebug() << "预查询完成，已标记所有单元格为干净";
+        }
     }
     else {
         message = "后台任务执行失败。";
@@ -512,39 +516,50 @@ void BaseReportParser::invalidateCache()
     clearCache();
 }
 
-void BaseReportParser::rescanDirtyCells(const QSet<QPair<int, int>>& dirtyCells)
+void BaseReportParser::rescanDirtyCells(const QSet<QPoint>& dirtyCells)
 {
-    qDebug() << "开始增量扫描，脏单元格数量：" << dirtyCells.size();
+    qDebug() << "========== 开始增量扫描 ==========";
+    qDebug() << "脏单元格数量：" << dirtyCells.size();
 
     int newCount = 0;
     int modifiedCount = 0;
     int removedCount = 0;
 
-    // 1. 扫描脏单元格，检测新增或修改
+    // ===== 第一遍：处理脏单元格 =====
     for (const auto& pos : dirtyCells) {
-        int row = pos.first;
-        int col = pos.second;
+        int row = pos.y();
+        int col = pos.x();
 
         CellData* cell = m_model->getCell(row, col);
         if (!cell) continue;
 
         QString text = cell->displayText();
 
-        // 检查是否是数据标记
-        if (text.startsWith("#d#")) {
-            QString rtuId = text.mid(3).trimmed();
+        // 【新增/修改数据标记】
+        if (isDataMarker(text)) {
+            QString rtuId = extractRtuId(text);
             QString oldMarker = m_scannedMarkers.value(pos);
 
             if (oldMarker.isEmpty()) {
-                // 新增的数据标记
+                // 新增数据标记
                 m_dataMarkerCells.append({ row, col, rtuId });
                 m_scannedMarkers.insert(pos, rtuId);
+
+                // 添加到查询任务
+                QueryTask task;
+                task.cell = cell;
+                task.row = row;
+                task.col = col;
+                task.queryPath = "";
+                m_queryTasks.append(task);
+
                 newCount++;
-                qDebug() << QString("  新增数据标记：行%1列%2，RTU=%3").arg(row).arg(col).arg(rtuId);
+                qDebug() << QString("新增数据标记：行%1列%2，RTU=%3").arg(row).arg(col).arg(rtuId);
             }
             else if (oldMarker != rtuId) {
-                // 修改的数据标记
-                // 【修正】使用迭代器删除旧的
+                // 修改数据标记（RTU号变化）
+
+                // 移除旧记录
                 for (auto it = m_dataMarkerCells.begin(); it != m_dataMarkerCells.end(); ) {
                     if (it->row == row && it->col == col) {
                         it = m_dataMarkerCells.erase(it);
@@ -553,17 +568,36 @@ void BaseReportParser::rescanDirtyCells(const QSet<QPair<int, int>>& dirtyCells)
                         ++it;
                     }
                 }
-                // 添加新的
+
+                for (auto it = m_queryTasks.begin(); it != m_queryTasks.end(); ) {
+                    if (it->row == row && it->col == col) {
+                        it = m_queryTasks.erase(it);
+                    }
+                    else {
+                        ++it;
+                    }
+                }
+
+                // 添加新记录
                 m_dataMarkerCells.append({ row, col, rtuId });
                 m_scannedMarkers.insert(pos, rtuId);
+
+                QueryTask task;
+                task.cell = cell;
+                task.row = row;
+                task.col = col;
+                task.queryPath = "";
+                m_queryTasks.append(task);
+
                 modifiedCount++;
-                qDebug() << QString("  修改数据标记：行%1列%2，%3 -> %4").arg(row).arg(col).arg(oldMarker).arg(rtuId);
+                qDebug() << QString(" 修改数据标记：行%1列%2，%3 → %4")
+                    .arg(row).arg(col).arg(oldMarker).arg(rtuId);
             }
         }
+        // 【移除数据标记】
         else {
-            // 单元格不再是数据标记
             if (m_scannedMarkers.contains(pos)) {
-                // 【修正】使用迭代器移除旧的数据标记记录
+                // 移除记录
                 for (auto it = m_dataMarkerCells.begin(); it != m_dataMarkerCells.end(); ) {
                     if (it->row == row && it->col == col) {
                         it = m_dataMarkerCells.erase(it);
@@ -572,13 +606,25 @@ void BaseReportParser::rescanDirtyCells(const QSet<QPair<int, int>>& dirtyCells)
                         ++it;
                     }
                 }
+
+                for (auto it = m_queryTasks.begin(); it != m_queryTasks.end(); ) {
+                    if (it->row == row && it->col == col) {
+                        it = m_queryTasks.erase(it);
+                    }
+                    else {
+                        ++it;
+                    }
+                }
+
                 m_scannedMarkers.remove(pos);
                 removedCount++;
-                qDebug() << QString("  移除数据标记：行%1列%2").arg(row).arg(col);
+                qDebug() << QString(" 移除数据标记：行%1列%2").arg(row).arg(col);
             }
         }
     }
 
-    qDebug() << QString("增量扫描完成：新增%1，修改%2，移除%3")
+    qDebug() << QString("增量扫描完成：新增 %1，修改 %2，移除 %3")
         .arg(newCount).arg(modifiedCount).arg(removedCount);
+    qDebug() << QString("当前查询任务数：%1").arg(m_queryTasks.size());
+    qDebug() << "========================================";
 }

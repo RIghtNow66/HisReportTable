@@ -20,7 +20,6 @@ public:
     bool scanAndParse() override;
     bool executeQueries(QProgressDialog* progress) override;
     void restoreToTemplate() override;
-    void runCorrectnessTest() override;
 
     // ===== 日报特有接口 =====
     QString getBaseDate() const { return m_baseDate; }
@@ -34,6 +33,8 @@ protected:
     int getQueryIntervalSeconds() const override { return 60; }  // 日报间隔60秒
 
     bool runAsyncTask() override;
+
+    QString findTimeForDataMarker(int row, int col) override;
 
 private:
     // ===== 日报特有的标记识别 =====

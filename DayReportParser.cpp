@@ -211,17 +211,15 @@ bool DayReportParser::executeQueries(QProgressDialog* progress)
         return true;
     }
 
+    bool cacheReady = analyzeAndPrefetch();
+
+    if (!cacheReady) {
+        qWarning() << "查询失败";
+        // 不直接返回，继续用现有缓存填充
+    }
+
     qDebug() << "========== 开始填充数据 ==========";
 
-    bool cacheReady = true;
-    if (m_dataCache.isEmpty()) {
-        qWarning() << "缓存为空，重新查询...";
-        cacheReady = analyzeAndPrefetch();
-
-        if (!cacheReady) {
-            qWarning() << "查询失败，将所有数据标记为N/A";
-        }
-    }
 
     if (progress) {
         progress->setRange(0, m_queryTasks.size());
@@ -324,39 +322,15 @@ QString DayReportParser::extractDate(const QString& text)
     return dateStr;
 }
 
-void DayReportParser::runCorrectnessTest()
+QString DayReportParser::findTimeForDataMarker(int row, int col)
 {
-    qDebug() << "";
-    qDebug() << "╔════════════════════════════════════════════════════════════╗";
-    qDebug() << "║          日报数据对应关系完整性测试                        ║";
-    qDebug() << "╚════════════════════════════════════════════════════════════╝";
-    qDebug() << "";
-
-    if (m_queryTasks.isEmpty()) {
-        qDebug() << "❌ 无测试数据";
-        return;
+    // 在同一行查找时间标记
+    int totalCols = m_model->columnCount();
+    for (int c = 0; c < totalCols; ++c) {
+        CellData* cell = m_model->getCell(row, c);
+        if (cell && cell->cellType == CellData::TimeMarker) {
+            return cell->value.toString();
+        }
     }
-
-    // 选择前3个任务作为测试样本
-    int testCount = qMin(3, m_queryTasks.size());
-    QList<QueryTask> testTasks;
-    for (int i = 0; i < testCount; ++i) {
-        testTasks.append(m_queryTasks[i]);
-    }
-
-    qDebug() << "【测试样本】选择前" << testCount << "个数据点：";
-    for (int i = 0; i < testTasks.size(); ++i) {
-        const QueryTask& task = testTasks[i];
-        QTime time = getTaskTime(task);
-        qDebug() << QString("  样本%1: 行%2列%3, RTU=%4, 时间=%5")
-            .arg(i + 1)
-            .arg(task.row + 1)
-            .arg(task.col + 1)
-            .arg(task.cell->rtuId)
-            .arg(time.toString("HH:mm:ss"));
-    }
-
-    qDebug() << "╔════════════════════════════════════════════════════════════╗";
-    qDebug() << "║   日报测试完成                                             ║";
-    qDebug() << "╚════════════════════════════════════════════════════════════╝";
+    return QString();
 }

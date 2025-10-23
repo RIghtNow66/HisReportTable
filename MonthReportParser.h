@@ -21,7 +21,6 @@ public:
     bool scanAndParse() override;
     bool executeQueries(QProgressDialog* progress) override;
     void restoreToTemplate() override;
-    void runCorrectnessTest() override;
 
     // ===== 月报特有接口 =====
     QString getBaseYearMonth() const { return m_baseYearMonth; }
@@ -45,6 +44,8 @@ protected:
     bool analyzeAndPrefetch() override;
 
     bool runAsyncTask() override;
+
+    QString findTimeForDataMarker(int row, int col) override;
 
 private:
     // ===== 月报特有的标记识别 =====

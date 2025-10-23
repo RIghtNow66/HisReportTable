@@ -252,14 +252,11 @@ bool MonthReportParser::executeQueries(QProgressDialog* progress)
 
     qDebug() << "========== 开始填充月报数据 ==========";
 
-    bool cacheReady = true;
-    if (m_dataCache.isEmpty()) {
-        qWarning() << "缓存为空，重新查询...";
-        cacheReady = analyzeAndPrefetch();
+    bool cacheReady = analyzeAndPrefetch();
 
-        if (!cacheReady) {
-            qWarning() << "查询失败，将所有数据标记为N/A";
-        }
+    if (!cacheReady) {
+        qWarning() << "查询失败";
+        // 不直接返回，继续用现有缓存填充
     }
 
     if (progress) {
@@ -637,60 +634,18 @@ bool MonthReportParser::analyzeAndPrefetch()
     return successCount > 0;
 }
 
-void MonthReportParser::runCorrectnessTest()
+QString MonthReportParser::findTimeForDataMarker(int row, int col)
 {
-    qDebug() << "";
-    qDebug() << "╔════════════════════════════════════════════════════════════╗";
-    qDebug() << "║          月报数据对应关系完整性测试                        ║";
-    qDebug() << "╚════════════════════════════════════════════════════════════╝";
-    qDebug() << "";
-
-    if (m_queryTasks.isEmpty()) {
-        qDebug() << " 无测试数据";
-        return;
-    }
-
-    // 选择前3个任务作为测试样本
-    int testCount = qMin(3, m_queryTasks.size());
-    QList<QueryTask> testTasks;
-    for (int i = 0; i < testCount; ++i) {
-        testTasks.append(m_queryTasks[i]);
-    }
-
-    qDebug() << "【测试样本】选择前" << testCount << "个数据点：";
-    for (int i = 0; i < testTasks.size(); ++i) {
-        const QueryTask& task = testTasks[i];
-
-        // 找到对应的日期
-        int day = 0;
-        int totalCols = m_model->columnCount();
-        for (int col = 0; col < totalCols; ++col) {
-            CellData* cell = m_model->getCell(task.row, col);
-            if (cell && cell->cellType == CellData::TimeMarker) {
-                day = cell->value.toInt();
-                break;
+    // 在同一行查找日期标记
+    int totalCols = m_model->columnCount();
+    for (int c = 0; c < totalCols; ++c) {
+        CellData* cell = m_model->getCell(row, c);
+        if (cell && cell->cellType == CellData::TimeMarker) {
+            int day = cell->value.toInt();
+            if (day > 0) {
+                return QString::number(day);
             }
         }
-
-        qDebug() << QString("  样本%1: 行%2列%3, RTU=%4, 日期=%5-%6日 %7")
-            .arg(i + 1)
-            .arg(task.row + 1)
-            .arg(task.col + 1)
-            .arg(task.cell->rtuId)
-            .arg(m_baseYearMonth)
-            .arg(day)
-            .arg(m_baseTime);
     }
-
-    qDebug() << "";
-    qDebug() << "【查询验证】";
-    qDebug() << QString("  年月: %1").arg(m_baseYearMonth);
-    qDebug() << QString("  时间: %1").arg(m_baseTime);
-    qDebug() << QString("  查询间隔: %1 秒 (24小时)").arg(getQueryIntervalSeconds());
-    qDebug() << QString("  预期返回: 该月天数 × RTU数量 个数据点");
-
-    qDebug() << "";
-    qDebug() << "╔════════════════════════════════════════════════════════════╗";
-    qDebug() << "║   月报测试完成                                             ║";
-    qDebug() << "╚════════════════════════════════════════════════════════════╝";
+    return QString();
 }

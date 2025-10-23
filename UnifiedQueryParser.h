@@ -46,6 +46,7 @@ protected:
     bool analyzeAndPrefetch() override { return true; }  // 空实现
     QList<TimeBlock> identifyTimeBlocks() override { return QList<TimeBlock>(); }  // 空实现
 
+    QString findTimeForDataMarker(int row, int col) override { return ""; }// 纯虚函数，子类实现
 
 private:
     HistoryReportConfig m_config;           // 配置信息

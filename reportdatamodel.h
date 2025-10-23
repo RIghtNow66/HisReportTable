@@ -151,6 +151,9 @@ public:
     void setDataColumnCount(int count) { m_dataColumnCount = count; }
 
 	// ===== 脏标记管理 =====
+    void markAllCellsClean();
+    bool hasDirtyCells() const { return !m_dirtyCells.isEmpty(); }
+    int getDirtyCellCount() const { return m_dirtyCells.size(); }
     void markCellDirty(int row, int col);
     void markRegionDirty(int startRow, int startCol, int endRow, int endCol);
     void clearDirtyMarks();
@@ -194,6 +197,11 @@ private:
     int m_dataColumnCount = 0;  // 新增：记录统一查询模式下数据列数
 
 private:
+    bool fillDataFromCache(QProgressDialog* progress);
+    QDateTime constructDateTimeForDayReport(int row, int col);
+    QDateTime constructDateTimeForMonthReport(int row, int col);
+    QString extractRtuId(const QString& text);
+
     // ===== 模式分发函数 =====
     QVariant getTemplateCellData(const QModelIndex& index, int role) const;
     QVariant getUnifiedQueryCellData(const QModelIndex& index, int role) const;  // 修改：实现
@@ -222,7 +230,7 @@ private:
     void restoreUnifiedQuery();    // 拆分：统一查询还原
 
     // 脏标记集合
-    QSet<QPair<int, int>> m_dirtyCells;  // 脏单元格集合
+    QSet<QPoint> m_dirtyCells;  // 脏单元格集合
 
 };
 
