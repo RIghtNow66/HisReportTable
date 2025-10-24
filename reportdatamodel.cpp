@@ -86,7 +86,7 @@ bool ReportDataModel::loadReportTemplate(const QString& fileName)
     // ===== 识别日报模式 =====
     if (baseName.startsWith("##Day_", Qt::CaseInsensitive)) {
         m_reportType = DAY_REPORT;
-        m_currentMode = TEMPLATE_MODE;  // 明确设置
+        m_currentMode = TEMPLATE_MODE;
         qDebug() << "检测到日报模板，开始解析...";
 
         m_parser = new DayReportParser(this, this);
@@ -96,14 +96,19 @@ bool ReportDataModel::loadReportTemplate(const QString& fileName)
             return false;
         }
 
-        // 连接预查询完成信号
+        // **关键修改**：连接预查询完成信号，但不在这里设置编辑状态
         connect(m_parser, &BaseReportParser::asyncTaskCompleted,
             this, [this](bool success, const QString& message) {
-                // 这个信号现在由 MainWindow 处理，这里可以留空或移除
-                qDebug() << "ReportDataModel 收到日报预查询完成信号: " << success << message;
+                qDebug() << "日报预查询完成: " << success << message;
+                // **预查询完成后恢复编辑模式**
+                if (m_parser) {
+                    m_parser->setEditState(BaseReportParser::CONFIG_EDIT);
+                }
+                setEditMode(true);  // 恢复可编辑
             }, Qt::QueuedConnection);
 
-        setEditMode(true);
+        // **关键修改**：立即设置为可编辑状态
+        setEditMode(true);  // 导入后立即可编辑
         notifyDataChanged();
         return true;
     }
@@ -111,7 +116,7 @@ bool ReportDataModel::loadReportTemplate(const QString& fileName)
     // ===== 识别月报模式 =====
     if (baseName.startsWith("##Month_", Qt::CaseInsensitive)) {
         m_reportType = MONTH_REPORT;
-        m_currentMode = TEMPLATE_MODE;  //  明确设置
+        m_currentMode = TEMPLATE_MODE;
         qDebug() << "检测到月报模板，开始解析...";
 
         m_parser = new MonthReportParser(this, this);
@@ -121,18 +126,22 @@ bool ReportDataModel::loadReportTemplate(const QString& fileName)
             return false;
         }
 
-        // 连接预查询完成信号
+        // **关键修改**：连接预查询完成信号
         connect(m_parser, &BaseReportParser::asyncTaskCompleted,
             this, [this](bool success, const QString& message) {
-                // 这个信号现在由 MainWindow 处理，这里可以留空或移除
-                qDebug() << "ReportDataModel 收到月报预查询完成信号: " << success << message;
+                qDebug() << "月报预查询完成: " << success << message;
+                // **预查询完成后恢复编辑模式**
+                if (m_parser) {
+                    m_parser->setEditState(BaseReportParser::CONFIG_EDIT);
+                }
+                setEditMode(true);  // 恢复可编辑
             }, Qt::QueuedConnection);
 
-        setEditMode(true);
+        // **关键修改**：立即设置为可编辑状态
+        setEditMode(true);  // 导入后立即可编辑
         notifyDataChanged();
         return true;
     }
-
     // ===== 普通 Excel =====
     m_reportType = NORMAL_EXCEL;
     m_currentMode = TEMPLATE_MODE;  //  明确设置
@@ -813,6 +822,17 @@ bool ReportDataModel::refreshTemplateReport(QProgressDialog* progress)
 //    return time.toString("HH:mm:ss"); // 总是返回标准格式
 //}
 
+void ReportDataModel::markRowDataMarkersDirty(int row)
+{
+    for (int col = 0; col < m_maxCol; ++col) {
+        const CellData* cell = getCell(row, col);
+        if (cell && cell->cellType == CellData::DataMarker) {
+            markCellDirty(row, col);
+            qDebug() << QString("  同行数据标记受影响: (%1, %2)").arg(row).arg(col);
+        }
+    }
+}
+
 bool ReportDataModel::setData(const QModelIndex& index, const QVariant& value, int role)
 {
     if (!index.isValid() || role != Qt::EditRole) {
@@ -834,9 +854,12 @@ bool ReportDataModel::setData(const QModelIndex& index, const QVariant& value, i
         return false;
     }
 
-    // ===== 清理旧状态（但保留 cellType 判断历史） =====
+    // ===== 保存旧状态用于比较 =====
     CellData::CellType oldType = cell->cellType;
+    QString oldMarkerText = cell->markerText;
+    QString oldRtuId = cell->rtuId;
 
+    // ===== 清理旧状态 =====
     cell->isDataBinding = false;
     cell->hasFormula = false;
     cell->formulaCalculated = false;
@@ -846,8 +869,8 @@ bool ReportDataModel::setData(const QModelIndex& index, const QVariant& value, i
     if (text.startsWith("#=#")) {
         cell->hasFormula = true;
         cell->formula = text;
-        cell->displayValue = text;  // 显示公式文本
-        cell->markerText.clear();   // 不是标记
+        cell->displayValue = text;
+        cell->markerText.clear();
         cell->cellType = CellData::NormalCell;
         cell->formulaCalculated = false;
 
@@ -858,56 +881,89 @@ bool ReportDataModel::setData(const QModelIndex& index, const QVariant& value, i
         QString rtuId = m_parser->extractRtuId(text);
 
         cell->cellType = CellData::DataMarker;
-        cell->markerText = text;          // 保存原始标记
+        cell->markerText = text;
         cell->rtuId = rtuId;
-        cell->displayValue = text;        // 初始显示标记
+        cell->displayValue = text;
         cell->queryExecuted = false;
         cell->querySuccess = false;
-
-        // 兼容性
         cell->originalMarker = text;
 
-        // 标记为脏（如果类型变了或RTU号变了）
+        // **关键修改**：更严格的脏标记判断
+        bool needMarkDirty = false;
+
+        // 情况1：新增数据标记
         if (oldType != CellData::DataMarker) {
+            needMarkDirty = true;
+            qDebug() << QString("新增数据标记: (%1, %2) RTU=%3").arg(row).arg(col).arg(rtuId);
+        }
+        // 情况2：修改已有数据标记的内容
+        else if (oldMarkerText != text || oldRtuId != rtuId) {
+            needMarkDirty = true;
+            qDebug() << QString("修改数据标记: (%1, %2) %3 -> %4, RTU: %5 -> %6")
+                .arg(row).arg(col)
+                .arg(oldMarkerText).arg(text)
+                .arg(oldRtuId).arg(rtuId);
+        }
+
+        if (needMarkDirty) {
             markCellDirty(row, col);
         }
     }
     // ===== 处理时间标记 #t# =====
     else if (text.startsWith("#t#", Qt::CaseInsensitive)) {
         cell->cellType = CellData::TimeMarker;
-        cell->markerText = text;          // 保存原始标记
+        cell->markerText = text;
         cell->displayValue = text;
         cell->originalMarker = text;
 
+        // **关键修改**：时间标记变化也要标记脏
+        bool needMarkDirty = false;
+
         if (oldType != CellData::TimeMarker) {
+            needMarkDirty = true;
+            qDebug() << QString("新增时间标记: (%1, %2) %3").arg(row).arg(col).arg(text);
+        }
+        else if (oldMarkerText != text) {
+            needMarkDirty = true;
+            qDebug() << QString("修改时间标记: (%1, %2) %3 -> %4")
+                .arg(row).arg(col).arg(oldMarkerText).arg(text);
+        }
+
+        if (needMarkDirty) {
             markCellDirty(row, col);
+            // **重要**：时间标记改变会影响同一行的所有数据标记
+            markRowDataMarkersDirty(row);
         }
     }
     // ===== 处理日期标记 #Date =====
     else if (text.startsWith("#Date", Qt::CaseInsensitive)) {
         cell->cellType = CellData::DateMarker;
-        cell->markerText = text;          // 保存原始标记
-        cell->displayValue = text;        // 暂时显示原始标记（解析器会更新）
-        // 兼容性
+        cell->markerText = text;
+        cell->displayValue = text;
         cell->originalMarker = text;
 
-        if (oldType != CellData::DateMarker) {
+        if (oldType != CellData::DateMarker || oldMarkerText != text) {
             markCellDirty(row, col);
+            qDebug() << QString("日期标记变化: (%1, %2) %3").arg(row).arg(col).arg(text);
         }
     }
     // ===== 处理普通文本 =====
     else {
-        // 如果之前是标记，现在改成普通文本，清理标记信息
+        // **关键修改**：如果之前是标记，现在改成普通文本，标记为脏
         if (oldType != CellData::NormalCell) {
-            markCellDirty(row, col);  // 标记为脏，表示标记被删除
+            markCellDirty(row, col);
+            qDebug() << QString("删除标记: (%1, %2) 类型=%3").arg(row).arg(col).arg((int)oldType);
+
+            // 如果删除的是时间标记，影响同行数据标记
+            if (oldType == CellData::TimeMarker) {
+                markRowDataMarkersDirty(row);
+            }
         }
 
         cell->cellType = CellData::NormalCell;
         cell->markerText.clear();
         cell->displayValue = value;
         cell->rtuId.clear();
-
-        // 清理兼容性字段
         cell->originalMarker.clear();
     }
 
@@ -921,7 +977,6 @@ bool ReportDataModel::setData(const QModelIndex& index, const QVariant& value, i
 
     return true;
 }
-
 
 Qt::ItemFlags ReportDataModel::getTemplateModeFlags(const QModelIndex& index) const
 {

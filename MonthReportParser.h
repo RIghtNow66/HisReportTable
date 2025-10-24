@@ -30,6 +30,8 @@ public:
     QString extractTime(const QString& text) const override;
 
     QVariant formatDisplayValueForMarker(const CellData* cell) const override;
+
+    void collectActualDays();
 protected:
     // ===== 实现纯虚函数 =====
     bool findDateMarker() override;
@@ -48,6 +50,9 @@ protected:
 
     QString findTimeForDataMarker(int row, int col) override;
 
+    void  onRescanCompleted(int newCount, int modifiedCount, int removedCount,
+        const QSet<int>& affectedRows)  override;
+
 private:
     // ===== 月报特有的标记识别 =====
     bool isDate1Marker(const QString& text) const;
@@ -56,9 +61,26 @@ private:
     QString extractTimeOfDay(const QString& text) const;
     int extractDay(const QString& text) const;
 
-    void collectActualDays();
     int getMinDay() const;
     int getMaxDay() const;
+
+    /**
+   * @brief 增量更新实际日期集合（仅处理变化的行）
+   * @param affectedRows 受影响的行号集合
+   */
+    void updateActualDaysIncremental(const QSet<int>& affectedRows);
+
+    /**
+     * @brief 从指定行提取日期
+     * @param row 行号
+     * @return 日期数字（1-31），失败返回0
+     */
+    int extractDayFromRow(int row) const;
+
+    /**
+ * @brief 验证并清理 m_actualDays 中的无效日期
+ */
+    void validateActualDays();
 
 private:
     QString m_baseYearMonth;   // "2024-01"

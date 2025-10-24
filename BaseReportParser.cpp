@@ -342,11 +342,14 @@ void BaseReportParser::rescanDirtyCells(const QSet<QPoint>& dirtyCells)
     int newCount = 0;
     int modifiedCount = 0;
     int removedCount = 0;
+    QSet<int> affectedRows;  // **新增：记录受影响的行**
 
     // ===== 第一遍：处理脏单元格 =====
     for (const auto& pos : dirtyCells) {
         int row = pos.y();
         int col = pos.x();
+
+        affectedRows.insert(row);  // **记录受影响的行**
 
         CellData* cell = m_model->getCell(row, col);
         if (!cell) continue;
@@ -363,7 +366,6 @@ void BaseReportParser::rescanDirtyCells(const QSet<QPoint>& dirtyCells)
                 m_dataMarkerCells.append({ row, col, rtuId });
                 m_scannedMarkers.insert(pos, rtuId);
 
-                // 添加到查询任务
                 QueryTask task;
                 task.cell = cell;
                 task.row = row;
@@ -408,7 +410,7 @@ void BaseReportParser::rescanDirtyCells(const QSet<QPoint>& dirtyCells)
                 m_queryTasks.append(task);
 
                 modifiedCount++;
-                qDebug() << QString(" 修改数据标记：行%1列%2，%3 → %4")
+                qDebug() << QString("修改数据标记：行%1列%2，%3 → %4")
                     .arg(row).arg(col).arg(oldMarker).arg(rtuId);
             }
         }
@@ -436,13 +438,18 @@ void BaseReportParser::rescanDirtyCells(const QSet<QPoint>& dirtyCells)
 
                 m_scannedMarkers.remove(pos);
                 removedCount++;
-                qDebug() << QString(" 移除数据标记：行%1列%2").arg(row).arg(col);
+                qDebug() << QString("移除数据标记：行%1列%2").arg(row).arg(col);
             }
         }
     }
 
     qDebug() << QString("增量扫描完成：新增 %1，修改 %2，移除 %3")
         .arg(newCount).arg(modifiedCount).arg(removedCount);
+    qDebug() << QString("受影响的行数：%1").arg(affectedRows.size());
     qDebug() << QString("当前查询任务数：%1").arg(m_queryTasks.size());
+
+    // **关键修改**：传递受影响的行号集合
+    onRescanCompleted(newCount, modifiedCount, removedCount, affectedRows);
+
     qDebug() << "========================================";
 }

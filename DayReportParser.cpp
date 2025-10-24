@@ -572,3 +572,54 @@ bool DayReportParser::analyzeAndPrefetch()
     // 只要有一次成功就返回 true
     return successCount > 0;
 }
+
+void DayReportParser::collectActualDays()
+{
+    m_actualDays.clear();
+
+    qDebug() << "开始收集日报日期标记...";
+
+    for (int row = 0; row < m_model->rowCount(); ++row) {
+        for (int col = 0; col < m_model->columnCount(); ++col) {
+            CellData* cell = m_model->getCell(row, col);
+
+            // 检查是否为日期标记
+            if (cell && cell->cellType == CellData::DateMarker) {
+                QString markerText = cell->markerText;
+
+                if (markerText.startsWith("#Date:", Qt::CaseInsensitive)) {
+                    QString dateStr = markerText.mid(6).trimmed();  // 去掉 "#Date:" 前缀
+                    QDate date = QDate::fromString(dateStr, "yyyy-MM-dd");
+
+                    if (date.isValid()) {
+                        if (!m_actualDays.contains(date)) {
+                            m_actualDays.insert(date);
+                            qDebug() << QString("  收集日期: 行%1列%2, date=%3")
+                                .arg(row).arg(col).arg(date.toString("yyyy-MM-dd"));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    qDebug() << QString("日报日期收集完成：共 %1 个").arg(m_actualDays.size());
+}
+
+void DayReportParser::onRescanCompleted(int newCount, int modifiedCount, int removedCount,
+    const QSet<int>& affectedRows)
+{
+    Q_UNUSED(affectedRows)
+
+        // 如果有任何变化（新增、修改、删除），重新收集日期
+        if (newCount > 0 || modifiedCount > 0 || removedCount > 0) {
+            qDebug() << "========== 日报检测到标记变化，重新收集日期 ==========";
+            qDebug() << QString("变化统计：新增=%1, 修改=%2, 删除=%3")
+                .arg(newCount).arg(modifiedCount).arg(removedCount);
+
+            // 重新收集所有日期
+            collectActualDays();
+
+            qDebug() << "=================================================";
+        }
+}

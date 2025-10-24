@@ -495,27 +495,50 @@ void MonthReportParser::collectActualDays()
 {
     m_actualDays.clear();
 
+    qDebug() << "========== 开始收集实际日期 ==========";
+
     for (int row = 0; row < m_model->rowCount(); ++row) {
         for (int col = 0; col < m_model->columnCount(); ++col) {
             CellData* cell = m_model->getCell(row, col);
+
+            // 检查 cellType 而不是 markerText
             if (cell && cell->cellType == CellData::TimeMarker) {
-                QString dayMarker = cell->markerText; // <-- [修复] 读取 markerText
+                QString dayMarker = cell->markerText;
+
+                // **安全检查**：如果 markerText 为空，尝试从 displayValue 读取
                 if (dayMarker.isEmpty()) {
                     dayMarker = cell->displayValue.toString();
+                    qDebug() << QString("  警告：行%1列%2的TimeMarker没有markerText，使用displayValue: %3")
+                        .arg(row).arg(col).arg(dayMarker);
+                }
+
+                if (dayMarker.isEmpty()) {
+                    qWarning() << QString("  跳过空标记: 行%1列%2").arg(row).arg(col);
+                    continue;
                 }
 
                 int day = extractDay(dayMarker);
 
                 if (day > 0) {
-                    QString fullDate = QString("%1-%2").arg(m_baseYearMonth).arg(day, 2, 10, QChar('0'));
+                    QString fullDate = QString("%1-%2")
+                        .arg(m_baseYearMonth)
+                        .arg(day, 2, 10, QChar('0'));
+
                     QDate date = QDate::fromString(fullDate, "yyyy-MM-dd");
 
                     if (date.isValid()) {
                         m_actualDays.insert(day);
+                        qDebug() << QString("  收集日期: 行%1列%2, day=%3, fullDate=%4")
+                            .arg(row).arg(col).arg(day).arg(fullDate);
                     }
                     else {
-                        qWarning() << QString("跳过无效日期：%1").arg(fullDate);
+                        qWarning() << QString("  无效日期: %1 (行%2列%3)")
+                            .arg(fullDate).arg(row).arg(col);
                     }
+                }
+                else {
+                    qWarning() << QString("  无法解析日期数字: %1 (行%2列%3)")
+                        .arg(dayMarker).arg(row).arg(col);
                 }
             }
         }
@@ -524,11 +547,19 @@ void MonthReportParser::collectActualDays()
     QList<int> sortedDays = m_actualDays.values();
     std::sort(sortedDays.begin(), sortedDays.end());
 
+    qDebug() << QString("收集完成：共 %1 个有效日期").arg(sortedDays.size());
+
     QString daysStr;
     for (int i = 0; i < sortedDays.size(); ++i) {
         if (i > 0) daysStr += ", ";
         daysStr += QString::number(sortedDays[i]);
+        if (i >= 10) {
+            daysStr += "...";
+            break;
+        }
     }
+    qDebug() << "日期列表: " << daysStr;
+    qDebug() << "==========================================";
 }
 
 
@@ -595,8 +626,31 @@ bool MonthReportParser::getDateRange(QString& startDate, QString& endDate)
     return true;
 }
 
+void MonthReportParser::onRescanCompleted(int newCount, int modifiedCount, int removedCount,
+    const QSet<int>& affectedRows)
+{
+    if (newCount > 0 || modifiedCount > 0 || removedCount > 0) {
+        qDebug() << "========== 月报增量更新日期集合 ==========";
+        qDebug() << QString("受影响的行数：%1").arg(affectedRows.size());
+
+        updateActualDaysIncremental(affectedRows);
+
+        // 如果有删除操作，单独验证
+        if (removedCount > 0) {
+            qDebug() << "  检测到删除操作，验证日期集合完整性...";
+            validateActualDays();
+        }
+
+        qDebug() << QString("更新后的日期总数：%1").arg(m_actualDays.size());
+        qDebug() << "==========================================";
+    }
+}
+
 bool MonthReportParser::analyzeAndPrefetch()
 {
+    qDebug() << "========== 月报预查询：重新收集日期 ==========";
+    collectActualDays();
+
     // 1. 识别时间块
     QList<TimeBlock> blocks = identifyTimeBlocks();
 
@@ -685,4 +739,93 @@ QString MonthReportParser::findTimeForDataMarker(int row, int col)
         }
     }
     return QString();
+}
+
+void MonthReportParser::validateActualDays()
+{
+    QSet<int> validDays;
+
+    // 快速扫描所有行，收集当前实际存在的日期
+    for (int row = 0; row < m_model->rowCount(); ++row) {
+        int day = extractDayFromRow(row);
+        if (day > 0) {
+            QString fullDate = QString("%1-%2")
+                .arg(m_baseYearMonth)
+                .arg(day, 2, 10, QChar('0'));
+
+            QDate date = QDate::fromString(fullDate, "yyyy-MM-dd");
+            if (date.isValid()) {
+                validDays.insert(day);
+            }
+        }
+    }
+
+    // 找出需要移除的日期
+    QSet<int> daysToRemove = m_actualDays - validDays;
+
+    if (!daysToRemove.isEmpty()) {
+        qDebug() << QString("  移除无效日期：%1 个").arg(daysToRemove.size());
+
+        for (int day : daysToRemove) {
+            m_actualDays.remove(day);
+            qDebug() << QString("    移除日期：%1").arg(day);
+        }
+    }
+}
+
+void MonthReportParser::updateActualDaysIncremental(const QSet<int>& affectedRows)
+{
+    if (affectedRows.isEmpty()) {
+        qDebug() << "  无受影响的行，跳过更新";
+        return;
+    }
+
+    // 扫描受影响的行，收集新的日期
+    QSet<int> newDays;
+    for (int row : affectedRows) {
+        int day = extractDayFromRow(row);
+        if (day > 0) {
+            QString fullDate = QString("%1-%2")
+                .arg(m_baseYearMonth)
+                .arg(day, 2, 10, QChar('0'));
+
+            QDate date = QDate::fromString(fullDate, "yyyy-MM-dd");
+
+            if (date.isValid()) {
+                newDays.insert(day);
+                if (!m_actualDays.contains(day)) {
+                    qDebug() << QString("  新增日期：行%1, day=%2").arg(row).arg(day);
+                }
+            }
+        }
+    }
+
+    // 合并到 m_actualDays
+    int beforeSize = m_actualDays.size();
+    m_actualDays.unite(newDays);
+    int afterSize = m_actualDays.size();
+
+    qDebug() << QString("  日期集合更新：%1 -> %2 (新增 %3 个)")
+        .arg(beforeSize).arg(afterSize).arg(afterSize - beforeSize);
+}
+
+int MonthReportParser::extractDayFromRow(int row) const
+{
+    for (int col = 0; col < m_model->columnCount(); ++col) {
+        const CellData* cell = m_model->getCell(row, col);
+
+        if (cell && cell->cellType == CellData::TimeMarker) {
+            QString dayMarker = cell->markerText;
+
+            if (dayMarker.isEmpty()) {
+                dayMarker = cell->displayValue.toString();
+            }
+
+            if (!dayMarker.isEmpty()) {
+                return extractDay(dayMarker);
+            }
+        }
+    }
+
+    return 0;  // 未找到有效日期
 }

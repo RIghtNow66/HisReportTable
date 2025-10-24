@@ -196,12 +196,13 @@ private:
 
     int m_dataColumnCount = 0;  // 新增：记录统一查询模式下数据列数
 
+    // 脏标记集合
+    QSet<QPoint> m_dirtyCells;  // 脏单元格集合
+
 private:
     bool fillDataFromCache(QProgressDialog* progress);
     QDateTime constructDateTimeForDayReport(int row, int col);
     QDateTime constructDateTimeForMonthReport(int row, int col);
-    //QString extractTime(const QString& text);
-    //QString extractRtuId(const QString& text);
 
     // ===== 模式分发函数 =====
     QVariant getTemplateCellData(const QModelIndex& index, int role) const;
@@ -230,9 +231,7 @@ private:
     void restoreTemplateReport();  // 拆分：模板模式还原
     void restoreUnifiedQuery();    // 拆分：统一查询还原
 
-    // 脏标记集合
-    QSet<QPoint> m_dirtyCells;  // 脏单元格集合
-
+    void markRowDataMarkersDirty(int row);  // 标记同行的所有数据标记为脏
 };
 
 #endif // REPORTDATAMODEL_H

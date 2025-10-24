@@ -143,6 +143,21 @@ signals:
 protected:
     // ===== 子类需要实现的纯虚函数 =====
 
+  /**
+     * @brief 增量扫描后的额外处理（子类可重写）
+     * @param newCount 新增数据标记数量
+     * @param modifiedCount 修改数据标记数量
+     * @param removedCount 移除数据标记数量
+     * @param affectedRows 受影响的行号集合
+     */
+    virtual void onRescanCompleted(int newCount, int modifiedCount, int removedCount,
+        const QSet<int>& affectedRows) {
+        Q_UNUSED(newCount)
+            Q_UNUSED(modifiedCount)
+            Q_UNUSED(removedCount)
+            Q_UNUSED(affectedRows)
+            // 基类默认不做额外处理
+    }
     /**
      * @brief 查找日期标记（不同报表的日期标记格式不同）
      * @return 是否找到有效的日期标记

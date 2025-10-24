@@ -29,6 +29,8 @@ public:
 
     bool analyzeAndPrefetch() override;
     QList<BaseReportParser::TimeBlock> identifyTimeBlocks() override;
+
+    void collectActualDays();
 protected:
     // ===== 实现纯虚函数 =====
     bool findDateMarker() override;
@@ -43,10 +45,15 @@ protected:
 
     QString findTimeForDataMarker(int row, int col) override;
 
+    void onRescanCompleted(int newCount, int modifiedCount, int removedCount,
+        const QSet<int>& affectedRows) override;
+
 private:
     // ===== 日报特有的标记识别 =====
     bool isDateMarker(const QString& text) const;
     QString extractDate(const QString& text) const;
+
+    QSet<QDate> m_actualDays;  // 应该是这个类型
 };
 
 #endif // DAYREPORTPARSER_H

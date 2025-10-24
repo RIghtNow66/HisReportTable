@@ -72,20 +72,35 @@ QVariant FormulaEngine::evaluateSum(const QString& range, ReportDataModel* model
 {
     QPair<QPoint, QPoint> cellRange = parseRange(range);
     if (cellRange.first.x() == -1 || cellRange.second.x() == -1) {
-        return QVariant(0.0);
+        return QVariant("N/A");  //  改为返回 N/A
     }
 
     double sum = 0.0;
-    bool ok; // 移到循环外
+    int validCount = 0;  // 记录有效值数量
+    bool ok;
+
     for (int row = cellRange.first.x(); row <= cellRange.second.x(); ++row) {
         for (int col = cellRange.first.y(); col <= cellRange.second.y(); ++col) {
             QVariant cellVal = model->getCellValueForFormula(row, col);
+
+            // 跳过 N/A 值
+            if (cellVal.toString() == "N/A") {
+                continue;
+            }
+
             double value = cellVal.toDouble(&ok);
-            if (ok) { // 检查转换是否成功
+            if (ok) {
                 sum += value;
+                validCount++;
             }
         }
     }
+
+    // 如果所有值都是 N/A，返回 N/A
+    if (validCount == 0) {
+        return QVariant("N/A");
+    }
+
     return QString::number(sum, 'f', 2);
 }
 
@@ -93,7 +108,7 @@ QVariant FormulaEngine::evaluateMax(const QString& range, ReportDataModel* model
 {
     QPair<QPoint, QPoint> cellRange = parseRange(range);
     if (cellRange.first.x() == -1 || cellRange.second.x() == -1) {
-        return QVariant(0.0);
+        return QVariant("N/A");  // 改为返回 N/A
     }
 
     double maxValue = -std::numeric_limits<double>::infinity();
@@ -103,47 +118,59 @@ QVariant FormulaEngine::evaluateMax(const QString& range, ReportDataModel* model
     for (int row = cellRange.first.x(); row <= cellRange.second.x(); ++row) {
         for (int col = cellRange.first.y(); col <= cellRange.second.y(); ++col) {
             QVariant cellVal = model->getCellValueForFormula(row, col);
+
+            // 跳过 N/A 值
+            if (cellVal.toString() == "N/A") {
+                continue;
+            }
+
             double value = cellVal.toDouble(&ok);
             if (ok) {
                 if (!hasNumericValue || value > maxValue) {
                     maxValue = value;
                 }
-                hasNumericValue = true; // 找到了至少一个数字
+                hasNumericValue = true;
             }
         }
     }
-    // 如果找到了数字，返回最大值；否则返回 0
-    return hasNumericValue ? QString::number(maxValue, 'f', 2) : QVariant(0.0);
+
+    // 如果所有值都是 N/A，返回 N/A
+    return hasNumericValue ? QString::number(maxValue, 'f', 2) : QVariant("N/A");
 }
 
 QVariant FormulaEngine::evaluateMin(const QString& range, ReportDataModel* model)
 {
     QPair<QPoint, QPoint> cellRange = parseRange(range);
     if (cellRange.first.x() == -1 || cellRange.second.x() == -1) {
-        return QVariant(0.0);
+        return QVariant("N/A");  //  改为返回 N/A
     }
 
-    // 使用 +infinity 初始化 minValue，确保任何数字都比它小
     double minValue = std::numeric_limits<double>::infinity();
-    bool hasNumericValue = false; // 标记是否至少找到一个有效数字
+    bool hasNumericValue = false;
     bool ok;
 
     for (int row = cellRange.first.x(); row <= cellRange.second.x(); ++row) {
         for (int col = cellRange.first.y(); col <= cellRange.second.y(); ++col) {
             QVariant cellVal = model->getCellValueForFormula(row, col);
+
+            //  跳过 N/A 值
+            if (cellVal.toString() == "N/A") {
+                continue;
+            }
+
             double value = cellVal.toDouble(&ok);
             if (ok) {
                 if (!hasNumericValue || value < minValue) {
                     minValue = value;
                 }
-                hasNumericValue = true; // 找到了至少一个数字
+                hasNumericValue = true;
             }
         }
     }
-    // 如果找到了数字，返回最小值；否则返回 0
-    return hasNumericValue ? QString::number(minValue, 'f', 2) : QVariant(0.0);
-}
 
+    //  如果所有值都是 N/A，返回 N/A
+    return hasNumericValue ? QString::number(minValue, 'f', 2) : QVariant("N/A");
+}
 
 QVariant FormulaEngine::evaluateExpression(const QString& expression, ReportDataModel* model)
 {
