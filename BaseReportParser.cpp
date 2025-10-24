@@ -454,28 +454,6 @@ bool BaseReportParser::isDataMarker(const QString& text) const
     return text.startsWith("#d#", Qt::CaseInsensitive);
 }
 
-QString BaseReportParser::extractTime(const QString& text)
-{
-    // 默认实现：#t#0:00 → "00:00:00"
-    QString timeStr = text.mid(3).trimmed();
-    QStringList parts = timeStr.split(":");
-
-    if (parts.size() == 2) {
-        timeStr += ":00";
-    }
-    else if (parts.size() != 3) {
-        qWarning() << "时间格式错误:" << text;
-        return "00:00:00";
-    }
-
-    QTime time = QTime::fromString(timeStr, "H:mm:ss");
-    if (!time.isValid()) {
-        qWarning() << "时间解析失败:" << timeStr;
-        return "00:00:00";
-    }
-
-    return time.toString("HH:mm:ss");
-}
 
 QString BaseReportParser::extractRtuId(const QString& text)
 {

@@ -203,6 +203,38 @@ QTime DayReportParser::getTaskTime(const QueryTask& task)
     return QTime();
 }
 
+QString DayReportParser::extractTime(const QString& text) const
+{
+    // 默认实现：#t#0:00 → "00:00:00"
+    if (!text.startsWith("#t#", Qt::CaseInsensitive) || text.length() <= 3) {
+        qWarning() << "extractTime: Invalid marker text:" << text;
+        return QString(); // 返回空表示失败
+    }
+    // 提取时间：#t#0:00 → "00:00:00"
+    QString timeStr = text.mid(3).trimmed();
+    QStringList parts = timeStr.split(":");
+
+    if (parts.size() == 2) {
+        timeStr += ":00";
+    }
+    else if (parts.size() != 3) {
+        qWarning() << "时间格式错误:" << text;
+        return "00:00:00";
+    }
+
+    // 尝试多种格式解析
+    QTime time = QTime::fromString(timeStr, "H:mm:ss");
+    if (!time.isValid()) {
+        time = QTime::fromString(timeStr, "HH:mm:ss");
+        if (!time.isValid()) {
+            qWarning() << "extractTime: Time parsing failed:" << timeStr << "from marker" << text;
+            return QString(); // 返回空表示失败
+        }
+    }
+
+    return time.toString("HH:mm:ss"); // 总是返回标准格式
+}
+
 QDateTime DayReportParser::constructDateTime(const QString& date, const QString& time)
 {
     QString dateTimeStr = date + " " + time;
@@ -290,30 +322,6 @@ bool DayReportParser::executeQueries(QProgressDialog* progress)
     m_model->notifyDataChanged();
 
     return successCount > 0;
-}
-
-void DayReportParser::restoreToTemplate()
-{
-    qDebug() << "恢复到模板初始状态...";
-
-    int restoredCount = 0;
-    int nullCount = 0;
-
-    for (const auto& task : m_queryTasks) {
-        if (!task.cell) {
-            nullCount++;
-            qWarning() << QString("跳过无效单元格：行%1 列%2").arg(task.row).arg(task.col);
-            continue;
-        }
-
-        // 还原为标记文本
-        task.cell->displayValue = task.cell->markerText;  // 显示原始标记
-        task.cell->queryExecuted = false;
-        task.cell->querySuccess = false;
-        restoredCount++;
-    }
-
-    qDebug() << QString("还原完成：成功%1个，跳过%2个无效单元格").arg(restoredCount).arg(nullCount);
 }
 
 bool DayReportParser::isDateMarker(const QString& text) const

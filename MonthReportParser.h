@@ -20,11 +20,14 @@ public:
     // ===== 实现基类接口 =====
     bool scanAndParse() override;
     bool executeQueries(QProgressDialog* progress) override;
-    void restoreToTemplate() override;
+    void restoreToTemplate() override {};
 
     // ===== 月报特有接口 =====
     QString getBaseYearMonth() const { return m_baseYearMonth; }
     QString getBaseTime() const { return m_baseTime; }
+
+    // ===== 重写标记识别 =====
+    QString extractTime(const QString& text) const override;
 
 protected:
     // ===== 实现纯虚函数 =====
@@ -36,9 +39,6 @@ protected:
 
     QList<TimeBlock> identifyTimeBlocks() override;
     bool getDateRange(QString& startDate, QString& endDate) override;
-
-    // ===== 重写标记识别 =====
-    QString extractTime(const QString& text) override;
 
     // ==== = 重写预查询逻辑 ==== =
     bool analyzeAndPrefetch() override;

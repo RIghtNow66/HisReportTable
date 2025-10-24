@@ -200,8 +200,8 @@ private:
     bool fillDataFromCache(QProgressDialog* progress);
     QDateTime constructDateTimeForDayReport(int row, int col);
     QDateTime constructDateTimeForMonthReport(int row, int col);
-    QString extractTime(const QString& text);
-    QString extractRtuId(const QString& text);
+    //QString extractTime(const QString& text);
+    //QString extractRtuId(const QString& text);
 
     // ===== 模式分发函数 =====
     QVariant getTemplateCellData(const QModelIndex& index, int role) const;

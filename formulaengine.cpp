@@ -4,6 +4,7 @@
 #include <QStack>
 #include <QQueue>
 #include <qDebug>
+#include <limits>
 
 FormulaEngine::FormulaEngine(QObject* parent) : QObject(parent)
 {
@@ -75,15 +76,13 @@ QVariant FormulaEngine::evaluateSum(const QString& range, ReportDataModel* model
     }
 
     double sum = 0.0;
+    bool ok; // 移到循环外
     for (int row = cellRange.first.x(); row <= cellRange.second.x(); ++row) {
         for (int col = cellRange.first.y(); col <= cellRange.second.y(); ++col) {
-            const CellData* cell = model->getCell(row, col);
-            if (cell) {
-                bool ok;
-                double value = cell->value.toDouble(&ok);
-                if (ok) {
-                    sum += value;
-                }
+            QVariant cellVal = model->getCellValueForFormula(row, col);
+            double value = cellVal.toDouble(&ok);
+            if (ok) { // 检查转换是否成功
+                sum += value;
             }
         }
     }
@@ -94,56 +93,55 @@ QVariant FormulaEngine::evaluateMax(const QString& range, ReportDataModel* model
 {
     QPair<QPoint, QPoint> cellRange = parseRange(range);
     if (cellRange.first.x() == -1 || cellRange.second.x() == -1) {
-        return QVariant();
+        return QVariant(0.0);
     }
 
-    double maxValue = std::numeric_limits<double>::lowest();
-    bool hasValue = false;
+    double maxValue = -std::numeric_limits<double>::infinity();
+    bool hasNumericValue = false;
+    bool ok;
 
     for (int row = cellRange.first.x(); row <= cellRange.second.x(); ++row) {
         for (int col = cellRange.first.y(); col <= cellRange.second.y(); ++col) {
-            const CellData* cell = model->getCell(row, col);
-            if (cell) {
-                bool ok;
-                double value = cell->value.toDouble(&ok);
-                if (ok) {
-                    if (!hasValue || value > maxValue) {
-                        maxValue = value;
-                        hasValue = true;
-                    }
+            QVariant cellVal = model->getCellValueForFormula(row, col);
+            double value = cellVal.toDouble(&ok);
+            if (ok) {
+                if (!hasNumericValue || value > maxValue) {
+                    maxValue = value;
                 }
+                hasNumericValue = true; // 找到了至少一个数字
             }
         }
     }
-    return hasValue ?  QString::number(maxValue, 'f', 2) : QVariant(0.0);
+    // 如果找到了数字，返回最大值；否则返回 0
+    return hasNumericValue ? QString::number(maxValue, 'f', 2) : QVariant(0.0);
 }
 
 QVariant FormulaEngine::evaluateMin(const QString& range, ReportDataModel* model)
 {
     QPair<QPoint, QPoint> cellRange = parseRange(range);
     if (cellRange.first.x() == -1 || cellRange.second.x() == -1) {
-        return QVariant();
+        return QVariant(0.0);
     }
 
-    double minValue = std::numeric_limits<double>::max();
-    bool hasValue = false;
+    // 使用 +infinity 初始化 minValue，确保任何数字都比它小
+    double minValue = std::numeric_limits<double>::infinity();
+    bool hasNumericValue = false; // 标记是否至少找到一个有效数字
+    bool ok;
 
     for (int row = cellRange.first.x(); row <= cellRange.second.x(); ++row) {
         for (int col = cellRange.first.y(); col <= cellRange.second.y(); ++col) {
-            const CellData* cell = model->getCell(row, col);
-            if (cell) {
-                bool ok;
-                double value = cell->value.toDouble(&ok);
-                if (ok) {
-                    if (!hasValue || value < minValue) {
-                        minValue = value;
-                        hasValue = true;
-                    }
+            QVariant cellVal = model->getCellValueForFormula(row, col);
+            double value = cellVal.toDouble(&ok);
+            if (ok) {
+                if (!hasNumericValue || value < minValue) {
+                    minValue = value;
                 }
+                hasNumericValue = true; // 找到了至少一个数字
             }
         }
     }
-    return hasValue ? QString::number(minValue, 'f', 2) : QVariant(0.0);
+    // 如果找到了数字，返回最小值；否则返回 0
+    return hasNumericValue ? QString::number(minValue, 'f', 2) : QVariant(0.0);
 }
 
 

@@ -334,36 +334,56 @@ bool ReportDataModel::refreshReportData(QProgressDialog* progress)
     return false;
 }
 
+// 在 reportdatamodel.cpp 文件中
+
 void ReportDataModel::restoreTemplateReport()
 {
     qDebug() << "还原模板模式配置...";
 
-    if (m_parser) {
-        m_parser->restoreToTemplate();
-    }
+    // === 新的还原逻辑：遍历所有单元格 ===
+    int restoredMarkers = 0;
+    int restoredFormulas = 0;
 
-    // 重置所有公式为未计算状态
- // 重置所有公式为未计算状态
     for (auto it = m_cells.begin(); it != m_cells.end(); ++it) {
         CellData* cell = it.value();
-        if (cell && cell->hasFormula) {
-            cell->formulaCalculated = false;
-            cell->displayValue = cell->formula;  // 显示公式文本
+        if (!cell) continue;
+
+        // 1. 还原标记单元格 (#Date, #t#, #d#) - 检查 markerText
+        if (!cell->markerText.isEmpty())
+        {
+            // 将显示值恢复为原始标记文本
+            cell->displayValue = cell->markerText;
+
+            // 如果是数据标记，重置查询状态
+            if (cell->cellType == CellData::DataMarker) { // 也可以用 markerText.startsWith("#d#")
+                cell->queryExecuted = false;
+                cell->querySuccess = false;
+            }
+            restoredMarkers++;
         }
+        // 2. 还原公式单元格 - 检查 hasFormula
+        else if (cell->hasFormula)
+        {
+            // 将显示值恢复为公式文本
+            cell->displayValue = cell->formula;
+            cell->formulaCalculated = false; // 标记为未计算
+            restoredFormulas++;
+        }
+        // 3. 普通单元格：其 displayValue 在还原时通常保持不变
     }
 
-    // 清空快照
+    qDebug() << QString("模型还原：还原了 %1 个标记单元格, %2 个公式单元格。")
+        .arg(restoredMarkers).arg(restoredFormulas);
+
+    // --- 保留后续的清理和状态设置 ---
     m_lastSnapshot.bindingKeys.clear();
     m_lastSnapshot.formulaCells.clear();
     m_lastSnapshot.dataMarkerCells.clear();
     m_isFirstRefresh = true;
-
     m_dirtyFormulas.clear();
-
     clearDirtyMarks();
     qDebug() << "脏标记已清空";
 
-    // 恢复编辑状态
     if (m_parser) {
         m_parser->setEditState(BaseReportParser::CONFIG_EDIT);
     }
@@ -797,6 +817,93 @@ QVariant ReportDataModel::data(const QModelIndex& index, int role) const
 //    return completedSuccessfully;
 //}
 
+//bool ReportDataModel::refreshTemplateReport(QProgressDialog* progress)
+//{
+//    if (!m_parser) {
+//        qWarning() << "解析器为空";
+//        return false;
+//    }
+//
+//    // ===== 【步骤1】检测变化类型 =====
+//    ChangeType changeType = detectChanges();
+//
+//    bool hasDirtyCells = !m_dirtyCells.isEmpty();
+//    bool hasNewFormulas = (changeType == FORMULA_ONLY || changeType == MIXED_CHANGE);
+//    bool hasDataChanges = (changeType == BINDING_ONLY || changeType == MIXED_CHANGE || hasDirtyCells);
+//
+//    qDebug() << QString("变化检测: changeType=%1, 脏单元格=%2, 新增公式=%3, 数据变化=%4")
+//        .arg(changeType).arg(m_dirtyCells.size()).arg(hasNewFormulas).arg(hasDataChanges);
+//
+//    // ===== 【步骤2】处理无变化情况 =====
+//    if (changeType == NO_CHANGE && !hasDirtyCells) {
+//        QString msg = "数据已是最新，无需刷新。";
+//        QMessageBox::information(nullptr, "无需刷新", msg);
+//        return true;
+//    }
+//
+//    // ===== 【步骤3】处理仅公式变化 =====
+//    if (!hasDataChanges && hasNewFormulas) {
+//        qDebug() << "仅公式变化，只计算公式";
+//        recalculateAllFormulas();
+//        saveRefreshSnapshot();
+//        notifyDataChanged();
+//        return true;
+//    }
+//
+//    // ===== 【步骤4】处理数据变化（有脏单元格或新增绑定）=====
+//    bool needQuery = false;
+//
+//    if (hasDirtyCells) {
+//        qDebug() << QString("检测到 %1 个脏单元格，需要增量查询").arg(m_dirtyCells.size());
+//
+//        // 增量扫描
+//        m_parser->rescanDirtyCells(m_dirtyCells);
+//        needQuery = true;
+//    }
+//    else if (changeType == BINDING_ONLY || changeType == MIXED_CHANGE) {
+//        // 没有脏单元格，但快照检测到新增绑定（用户可能恢复配置后重新添加）
+//        qDebug() << "检测到新增绑定，需要全量查询";
+//        //m_parser->clearCache();
+//        if (!m_parser->scanAndParse()) {
+//            qWarning() << "扫描失败";
+//            return false;
+//        }
+//        needQuery = true;
+//    }
+//
+//    // ===== 【步骤5】执行查询 =====
+//    bool querySuccess = true;
+//    if (needQuery) {
+//        qDebug() << "开始执行查询...";
+//        querySuccess = m_parser->executeQueries(progress);
+//
+//        if (!querySuccess) {
+//            qWarning() << "查询失败";
+//        }
+//    }
+//
+//    // ===== 【步骤6】从缓存填充所有数据 =====
+//    bool fillSuccess = fillDataFromCache(progress);
+//
+//    // ===== 【步骤7】清理脏标记 =====
+//    clearDirtyMarks();
+//    qDebug() << "脏标记已清理";
+//
+//    // ===== 【步骤8】计算公式 =====
+//    if (fillSuccess || querySuccess) {
+//        qDebug() << "开始计算公式...";
+//        recalculateAllFormulas();
+//        optimizeMemory();
+//    }
+//
+//    // ===== 【步骤9】保存快照并进入运行模式 =====
+//    saveRefreshSnapshot();
+//    setEditMode(false);
+//
+//    notifyDataChanged();
+//    return fillSuccess || querySuccess;
+//}
+
 bool ReportDataModel::refreshTemplateReport(QProgressDialog* progress)
 {
     if (!m_parser) {
@@ -805,83 +912,155 @@ bool ReportDataModel::refreshTemplateReport(QProgressDialog* progress)
     }
 
     // ===== 【步骤1】检测变化类型 =====
+    // 注意：首次刷新时，即使 changeType 是 MIXED_CHANGE，也不一定需要重新扫描
     ChangeType changeType = detectChanges();
 
-    bool hasDirtyCells = !m_dirtyCells.isEmpty();
+    bool hasDirtyCells = !m_dirtyCells.isEmpty(); // 用户是否编辑过？
     bool hasNewFormulas = (changeType == FORMULA_ONLY || changeType == MIXED_CHANGE);
-    bool hasDataChanges = (changeType == BINDING_ONLY || changeType == MIXED_CHANGE || hasDirtyCells);
 
-    qDebug() << QString("变化检测: changeType=%1, 脏单元格=%2, 新增公式=%3, 数据变化=%4")
-        .arg(changeType).arg(m_dirtyCells.size()).arg(hasNewFormulas).arg(hasDataChanges);
+    qDebug() << QString("变化检测: isFirstRefresh=%1, changeType=%2, 脏单元格=%3, 新增公式=%4")
+        .arg(m_isFirstRefresh).arg(changeType).arg(m_dirtyCells.size()).arg(hasNewFormulas);
 
-    // ===== 【步骤2】处理无变化情况 =====
-    if (changeType == NO_CHANGE && !hasDirtyCells) {
+    // ===== 【步骤2 - 核心修改】处理首次刷新且无编辑的情况 =====
+    // 如果是第一次刷新 (导入刚完成，预查询已结束)，并且用户没有做任何修改 (没有脏单元格)
+    // 那么我们不需要重新扫描或查询，直接用预查询的结果填充缓存即可。
+    if (m_isFirstRefresh && !hasDirtyCells) {
+        qDebug() << "首次刷新且无脏单元格，直接从缓存填充";
+
+        // 直接调用 fillDataFromCache，它会使用预查询填充的缓存
+        bool fillSuccess = fillDataFromCache(progress);
+
+        if (progress && progress->wasCanceled()) {
+            qDebug() << "填充被用户取消";
+            return false;
+        }
+
+        // 填充成功后，才进行后续步骤
+        if (fillSuccess) {
+            clearDirtyMarks(); // 清理可能存在的（理论上没有）脏标记
+            qDebug() << "开始计算公式...";
+            recalculateAllFormulas(); // 计算公式
+            optimizeMemory();
+            saveRefreshSnapshot(); // 保存快照，标记不再是首次刷新
+            setEditMode(false);    // 进入运行模式
+            notifyDataChanged();   // 更新UI
+        }
+        // 如果 fillDataFromCache 失败 (比如缓存为空？)，也应该告知用户
+        else {
+            qWarning() << "首次刷新时从缓存填充数据失败！";
+            QMessageBox::warning(nullptr, "刷新失败", "无法从缓存填充数据，请检查预查询是否成功完成。");
+            // 这里可以选择是否还原模板，暂时不还原
+        }
+        return fillSuccess; // 返回填充结果
+    }
+
+    // ===== 【步骤3】处理后续刷新 - 无变化情况 (基本不变) =====
+    if (!m_isFirstRefresh && changeType == NO_CHANGE && !hasDirtyCells) {
         QString msg = "数据已是最新，无需刷新。";
         QMessageBox::information(nullptr, "无需刷新", msg);
+        // saveRefreshSnapshot(); // 可以在这里更新一下快照时间戳，如果需要的话
         return true;
     }
 
-    // ===== 【步骤3】处理仅公式变化 =====
-    if (!hasDataChanges && hasNewFormulas) {
+    // ===== 【步骤4】处理后续刷新 - 仅公式变化 (基本不变) =====
+    if (!hasDirtyCells && changeType == FORMULA_ONLY) { // 确认没有数据变化
         qDebug() << "仅公式变化，只计算公式";
         recalculateAllFormulas();
-        saveRefreshSnapshot();
+        saveRefreshSnapshot(); // 保存快照，因为公式结构变了
         notifyDataChanged();
         return true;
     }
 
-    // ===== 【步骤4】处理数据变化（有脏单元格或新增绑定）=====
-    bool needQuery = false;
+    // ===== 【步骤5】处理后续刷新 - 需要处理数据变化 (有脏单元格或新增绑定) =====
+    // 这部分逻辑基本可以保持，因为它处理的是用户编辑后的情况
+    bool needQuery = false; // 是否需要调用 parser->executeQueries
+    bool scanNeeded = false; // 是否需要调用 parser->scanAndParse (通常只有绑定变化时需要)
 
     if (hasDirtyCells) {
-        qDebug() << QString("检测到 %1 个脏单元格，需要增量查询").arg(m_dirtyCells.size());
-
-        // 增量扫描
-        m_parser->rescanDirtyCells(m_dirtyCells);
-        needQuery = true;
+        qDebug() << QString("检测到 %1 个脏单元格，进行增量扫描/查询").arg(m_dirtyCells.size());
+        m_parser->rescanDirtyCells(m_dirtyCells); // 更新内部查询任务列表
+        // 检查缓存是否仍然有效，如果无效或增量扫描发现了需要新查询的任务，则需要查询
+        if (!m_parser->isCacheValid()) { // 或更复杂的逻辑判断是否需要查询
+            qDebug() << "缓存失效或需要新数据，准备查询";
+            m_parser->invalidateCache();
+            needQuery = true;
+        }
+        else {
+            qDebug() << "缓存有效，尝试仅从缓存填充脏单元格对应数据";
+            needQuery = false; // 假设增量扫描的任务可以在缓存中找到
+        }
+        scanNeeded = false; // 增量扫描代替了全量扫描
     }
-    else if (changeType == BINDING_ONLY || changeType == MIXED_CHANGE) {
-        // 没有脏单元格，但快照检测到新增绑定（用户可能恢复配置后重新添加）
-        qDebug() << "检测到新增绑定，需要全量查询";
-        //m_parser->clearCache();
-        if (!m_parser->scanAndParse()) {
-            qWarning() << "扫描失败";
+    // 处理非首次刷新时，绑定发生变化的情况（例如还原后重新添加标记）
+    else if (!m_isFirstRefresh && (changeType == BINDING_ONLY || changeType == MIXED_CHANGE))
+    {
+        qDebug() << "检测到绑定变化(非首次刷新)，需要重新扫描并查询";
+        m_parser->invalidateCache(); // 绑定变了，缓存可能需要更新
+        scanNeeded = true;           // 需要重新构建查询任务列表
+        needQuery = true;            // 需要根据新的任务列表查询
+    }
+
+    // ===== 【步骤6】执行扫描 (如果需要) =====
+    if (scanNeeded) {
+        qDebug() << "执行重新扫描...";
+        if (!m_parser->scanAndParse()) { // 只有在明确需要时才重新扫描
+            qWarning() << "重新扫描失败";
+            QMessageBox::warning(nullptr, "扫描失败", "重新扫描模板标记失败，请检查模板。");
             return false;
         }
-        needQuery = true;
+        // 注意：如果 scanAndParse 内部启动了异步查询，这里的逻辑需要调整
+        // 假设 scanAndParse 只准备任务列表，不自动启动查询
     }
 
-    // ===== 【步骤5】执行查询 =====
+    // ===== 【步骤7】执行查询 (如果需要) =====
     bool querySuccess = true;
     if (needQuery) {
-        qDebug() << "开始执行查询...";
+        qDebug() << "开始执行查询 (executeQueries)...";
+        // executeQueries 应该内部处理缓存检查，只有缓存没有或失效时才真正查库
         querySuccess = m_parser->executeQueries(progress);
 
+        if (!querySuccess && progress && progress->wasCanceled()) {
+            qDebug() << "查询被用户取消";
+            return false; // 取消时直接返回
+        }
         if (!querySuccess) {
-            qWarning() << "查询失败";
+            qWarning() << "查询失败/部分失败";
+            // 即使查询失败，也继续尝试填充，可能会显示 N/A
         }
     }
 
-    // ===== 【步骤6】从缓存填充所有数据 =====
+    // ===== 【步骤8】从缓存填充所有数据 (总是执行，确保UI更新) =====
+    qDebug() << "开始从缓存填充数据 (fillDataFromCache)...";
     bool fillSuccess = fillDataFromCache(progress);
+    if (progress && progress->wasCanceled()) {
+        qDebug() << "填充被用户取消";
+        return false; // 取消时直接返回
+    }
 
-    // ===== 【步骤7】清理脏标记 =====
+    // ===== 【步骤9】清理脏标记 =====
     clearDirtyMarks();
     qDebug() << "脏标记已清理";
 
-    // ===== 【步骤8】计算公式 =====
-    if (fillSuccess || querySuccess) {
-        qDebug() << "开始计算公式...";
-        recalculateAllFormulas();
-        optimizeMemory();
+    // ===== 【步骤10】计算公式 =====
+    qDebug() << "开始计算公式...";
+    recalculateAllFormulas();
+    optimizeMemory();
+
+    // ===== 【步骤11】保存快照并进入运行模式 =====
+    // 只有在填充成功（意味着数据显示出来了，即使部分是N/A）时才保存快照和切换模式
+    if (fillSuccess) {
+        saveRefreshSnapshot();
+        setEditMode(false); // 进入运行模式
+        qDebug() << "刷新成功完成，进入运行模式";
+    }
+    else {
+        qWarning() << "填充数据失败，保持编辑模式";
+        // 可能需要给用户更明确的错误提示
+        QMessageBox::warning(nullptr, "刷新失败", "从缓存填充数据失败。");
     }
 
-    // ===== 【步骤9】保存快照并进入运行模式 =====
-    saveRefreshSnapshot();
-    setEditMode(false);
-
-    notifyDataChanged();
-    return fillSuccess || querySuccess;
+    notifyDataChanged(); // 确保UI总是更新
+    return fillSuccess; // 返回填充操作是否成功
 }
 
 //  检查是否有##绑定
@@ -895,36 +1074,45 @@ bool ReportDataModel::hasDataBindings() const
     return false;
 }
 
-QString ReportDataModel::extractRtuId(const QString& text)
-{
-    if (text.startsWith("#d#", Qt::CaseInsensitive)) {
-        return text.mid(3).trimmed();
-    }
-    return QString();
-}
-
-QString ReportDataModel::extractTime(const QString& text)
-{
-    // 提取时间：#t#0:00 → "00:00:00"
-    QString timeStr = text.mid(3).trimmed();
-    QStringList parts = timeStr.split(":");
-
-    if (parts.size() == 2) {
-        timeStr += ":00";
-    }
-    else if (parts.size() != 3) {
-        qWarning() << "时间格式错误:" << text;
-        return "00:00:00";
-    }
-
-    QTime time = QTime::fromString(timeStr, "H:mm:ss");
-    if (!time.isValid()) {
-        qWarning() << "时间解析失败:" << timeStr;
-        return "00:00:00";
-    }
-
-    return time.toString("HH:mm:ss");
-}
+//QString ReportDataModel::extractRtuId(const QString& text)
+//{
+//    if (text.startsWith("#d#", Qt::CaseInsensitive)) {
+//        return text.mid(3).trimmed();
+//    }
+//    return QString();
+//}
+//
+//QString ReportDataModel::extractTime(const QString& text)
+//{
+//    // 默认实现：#t#0:00 → "00:00:00"
+//    if (!text.startsWith("#t#", Qt::CaseInsensitive) || text.length() <= 3) {
+//        qWarning() << "extractTime: Invalid marker text:" << text;
+//        return QString(); // 返回空表示失败
+//    }
+//    // 提取时间：#t#0:00 → "00:00:00"
+//    QString timeStr = text.mid(3).trimmed();
+//    QStringList parts = timeStr.split(":");
+//
+//    if (parts.size() == 2) {
+//        timeStr += ":00";
+//    }
+//    else if (parts.size() != 3) {
+//        qWarning() << "时间格式错误:" << text;
+//        return "00:00:00";
+//    }
+//
+//    // 尝试多种格式解析
+//    QTime time = QTime::fromString(timeStr, "H:mm:ss");
+//    if (!time.isValid()) {
+//        time = QTime::fromString(timeStr, "HH:mm:ss");
+//        if (!time.isValid()) {
+//            qWarning() << "extractTime: Time parsing failed:" << timeStr << "from marker" << text;
+//            return QString(); // 返回空表示失败
+//        }
+//    }
+//
+//    return time.toString("HH:mm:ss"); // 总是返回标准格式
+//}
 
 bool ReportDataModel::setData(const QModelIndex& index, const QVariant& value, int role)
 {
@@ -968,7 +1156,7 @@ bool ReportDataModel::setData(const QModelIndex& index, const QVariant& value, i
     }
     // ===== 处理数据标记 #d# =====
     else if (text.startsWith("#d#", Qt::CaseInsensitive)) {
-        QString rtuId = extractRtuId(text);
+        QString rtuId = m_parser->extractRtuId(text);
 
         cell->cellType = CellData::DataMarker;
         cell->markerText = text;          // 保存原始标记
@@ -991,7 +1179,7 @@ bool ReportDataModel::setData(const QModelIndex& index, const QVariant& value, i
         cell->markerText = text;          // 保存原始标记
 
         // 解析时间并设置显示值
-        QString timeStr = extractTime(text);
+        QString timeStr = m_parser->extractTime(text);
         cell->displayValue = timeStr.left(5);  // 显示 "00:00"
 
         // 兼容性
@@ -1464,7 +1652,7 @@ void ReportDataModel::calculateFormula(int row, int col)
 
     // 调用公式引擎计算结果
     QVariant result = m_formulaEngine->evaluate(cell->formula, this, row, col);
-    cell->value = result;
+    cell->displayValue = result;
     cell->formulaCalculated = true;  // 标记已计算
 }
 
@@ -2200,29 +2388,50 @@ bool ReportDataModel::fillDataFromCache(QProgressDialog* progress)
 QDateTime ReportDataModel::constructDateTimeForDayReport(int row, int col)
 {
     DayReportParser* dayParser = dynamic_cast<DayReportParser*>(m_parser);
-    if (!dayParser) {
+    if (!dayParser || dayParser->getBaseDate().isEmpty()) {
+        qWarning() << "Row" << row << ": DayReportParser invalid or baseDate empty.";
         return QDateTime();
     }
 
     // 在同一行查找时间标记
     QTime time;
+    bool timeFound = false;
     for (int c = 0; c < m_maxCol; ++c) {
         const CellData* timeCell = getCell(row, c);
-        if (timeCell && timeCell->cellType == CellData::TimeMarker) {
-            QString timeStr = timeCell->value.toString();
-            time = QTime::fromString(timeStr, "HH:mm:ss");
-            if (!time.isValid()) {
-                time = QTime::fromString(timeStr, "HH:mm");
+        // ===== 检查 markerText 并从中解析 =====
+        if (timeCell && !timeCell->markerText.isEmpty() && timeCell->markerText.startsWith("#t#", Qt::CaseInsensitive)) {
+            QString timeMarker = timeCell->markerText;
+            // 调用 extractTime 从 markerText 解析时间字符串 "HH:mm:ss"
+            QString timeStr = m_parser->extractTime(timeMarker);
+            if (!timeStr.isEmpty()) {
+                time = QTime::fromString(timeStr, "HH:mm:ss");
+                if (time.isValid()) {
+                    timeFound = true;
+                }
+                else {
+                    qWarning() << "Row" << row << ": Failed to parse extracted time:" << timeStr << "from marker" << timeMarker;
+                }
             }
-            break;
+            else {
+                qWarning() << "Row" << row << ": extractTime failed for marker:" << timeMarker;
+            }
+            break; // 找到了标记单元格就跳出内层循环
         }
     }
 
-    if (time.isValid()) {
-        QString baseDate = dayParser->getBaseDate();
-        return QDateTime(QDate::fromString(baseDate, "yyyy-MM-dd"), time);
+    if (timeFound) {
+        QString baseDateStr = dayParser->getBaseDate();
+        QDate date = QDate::fromString(baseDateStr, "yyyy-MM-dd");
+        if (!date.isValid()) {
+            qWarning() << "Row" << row << ": Invalid baseDate found:" << baseDateStr;
+            return QDateTime();
+        }
+        return QDateTime(date, time);
     }
-
+    else {
+        // 只有在循环结束后仍未找到时间才打印此警告
+        qWarning() << "Row" << row << ": Could not find valid TimeMarker cell or parse time.";
+    }
     return QDateTime();
 }
 
@@ -2230,30 +2439,54 @@ QDateTime ReportDataModel::constructDateTimeForDayReport(int row, int col)
 QDateTime ReportDataModel::constructDateTimeForMonthReport(int row, int col)
 {
     MonthReportParser* monthParser = dynamic_cast<MonthReportParser*>(m_parser);
-    if (!monthParser) {
+    if (!monthParser || monthParser->getBaseYearMonth().isEmpty() || monthParser->getBaseTime().isEmpty()) {
+        qWarning() << "Row" << row << ": MonthReportParser invalid or base date/time empty.";
         return QDateTime();
     }
 
-    // 在同一行查找日期标记
+    // 在同一行查找日期标记 (#t# 代表日)
     int day = 0;
+    bool dayFound = false;
     for (int c = 0; c < m_maxCol; ++c) {
         const CellData* dayCell = getCell(row, c);
-        if (dayCell && dayCell->cellType == CellData::TimeMarker) {
-            day = dayCell->value.toInt();
-            break;
+        // ===== 修改：检查 markerText 并从中解析 =====
+        if (dayCell && !dayCell->markerText.isEmpty() && dayCell->markerText.startsWith("#t#", Qt::CaseInsensitive)) {
+            QString dayMarker = dayCell->markerText;
+            // 直接从 markerText 中提取数字部分
+            QString dayStr = dayMarker.mid(3).trimmed();
+            bool ok = false;
+            day = dayStr.toInt(&ok);
+            // 增加对 day 范围的检查
+            if (!ok || day < 1 || day > 31) {
+                qWarning() << "Row" << row << ": Failed to parse valid day number from markerText:" << dayMarker;
+                day = 0; // 重置为无效值
+            }
+            else {
+                dayFound = true;
+            }
+            break; // 找到了标记单元格就跳出内层循环
         }
+        // ===========================================
     }
 
-    if (day > 0) {
+    if (dayFound) {
         QString yearMonth = monthParser->getBaseYearMonth();
-        QString baseTime = monthParser->getBaseTime();
-        QString fullDate = QString("%1-%2").arg(yearMonth).arg(day, 2, 10, QChar('0'));
-        QDate date = QDate::fromString(fullDate, "yyyy-MM-dd");
-        QTime time = QTime::fromString(baseTime, "HH:mm:ss");
+        QString baseTimeStr = monthParser->getBaseTime(); // 应为 "HH:mm:ss" 格式
+        QString fullDateStr = QString("%1-%2").arg(yearMonth).arg(day, 2, 10, QChar('0'));
+        QDate date = QDate::fromString(fullDateStr, "yyyy-MM-dd");
+        QTime time = QTime::fromString(baseTimeStr, "HH:mm:ss");
 
+        // 增加对 date 和 time 有效性的检查和日志
         if (date.isValid() && time.isValid()) {
             return QDateTime(date, time);
         }
+        else {
+            qWarning() << "Row" << row << ": Failed to construct valid QDateTime. Date valid:" << date.isValid() << "Time valid:" << time.isValid() << "DateStr:" << fullDateStr << "TimeStr:" << baseTimeStr;
+        }
+    }
+    else {
+        // 只有在循环结束后仍未找到日期才打印此警告
+        qWarning() << "Row" << row << ": Could not find valid TimeMarker cell or parse day number.";
     }
 
     return QDateTime();

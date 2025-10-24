@@ -19,10 +19,11 @@ public:
     // ===== 实现基类接口 =====
     bool scanAndParse() override;
     bool executeQueries(QProgressDialog* progress) override;
-    void restoreToTemplate() override;
 
     // ===== 日报特有接口 =====
     QString getBaseDate() const { return m_baseDate; }
+
+    QString extractTime(const QString& text) const override;
 
 protected:
     // ===== 实现纯虚函数 =====
@@ -31,6 +32,8 @@ protected:
     QTime getTaskTime(const QueryTask& task) override;
     QDateTime constructDateTime(const QString& date, const QString& time) override;
     int getQueryIntervalSeconds() const override { return 60; }  // 日报间隔60秒
+
+    void restoreToTemplate() override {};
 
     bool runAsyncTask() override;
 

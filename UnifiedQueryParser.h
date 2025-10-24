@@ -48,6 +48,8 @@ protected:
 
     QString findTimeForDataMarker(int row, int col) override { return ""; }// 纯虚函数，子类实现
 
+    QString extractTime(const QString& text) const override { return ""; }
+
 private:
     HistoryReportConfig m_config;           // 配置信息
     TimeRangeConfig m_timeConfig;           // 时间配置

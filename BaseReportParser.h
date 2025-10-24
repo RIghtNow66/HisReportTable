@@ -116,6 +116,10 @@ public:
 
     bool findInCache(const QString& rtuId, int64_t timestamp, float& value);
 
+    virtual QString extractTime(const QString& text) const = 0;
+
+    virtual QString extractRtuId(const QString& text);
+
 signals:
     // ===== 同步解析信号 =====
     void parseProgress(int current, int total);
@@ -220,9 +224,6 @@ protected:
     // ===== 标记识别（子类可选择性重写） =====
     virtual bool isTimeMarker(const QString& text) const;
     virtual bool isDataMarker(const QString& text) const;
-
-    virtual QString extractTime(const QString& text);
-    virtual QString extractRtuId(const QString& text);
 
 protected slots:
     void onAsyncTaskFinished();

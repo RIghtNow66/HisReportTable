@@ -354,33 +354,7 @@ bool MonthReportParser::executeQueries(QProgressDialog* progress)
     return successCount > 0;
 }
 
-void MonthReportParser::restoreToTemplate()
-{
-    qDebug() << "恢复月报到模板初始状态...";
-
-
-    // ===== 添加空指针检查 =====
-    int restoredCount = 0;
-    int nullCount = 0;
-
-    for (const auto& task : m_queryTasks) {
-        if (!task.cell) {
-            nullCount++;
-            qWarning() << QString("跳过无效单元格：行%1 列%2").arg(task.row).arg(task.col);
-            continue;
-        }
-
-        // 还原为标记文本
-        task.cell->displayValue = task.cell->markerText;  // 显示原始标记
-        task.cell->queryExecuted = false;
-        task.cell->querySuccess = false;
-        restoredCount++;
-    }
-
-    qDebug() << QString("还原完成：成功%1个，跳过%2个无效单元格").arg(restoredCount).arg(nullCount);
-}
-
-QString MonthReportParser::extractTime(const QString& text)
+QString MonthReportParser::extractTime(const QString& text) const
 {
     // 月报中 #t# 后面是日期数字，不是时间
     // 例如：#t#1 表示1日

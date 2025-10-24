@@ -93,18 +93,18 @@ bool ExcelHandler::loadFromFile(const QString& fileName, ReportDataModel* model)
                     QString rawString = rawValue.toString();
                     if (rawString.startsWith("#=#")) {
                         newCell->setFormula(rawString);  // 内部会设置 formulaCalculated = false
-                        newCell->value = rawString;       // 显示公式文本
+                        newCell->displayValue = rawString;       // 显示公式文本
                     }
                     else if (rawString.startsWith("##") || rawString.startsWith("#")) {
                         newCell->originalMarker = rawString;
-                        newCell->value = rawString;
+                        newCell->displayValue = rawString;
                     }
                     else {
-                        newCell->value = rawValue;
+                        newCell->displayValue = rawValue;
                     }
                 }
                 else {
-                    newCell->value = rawValue;
+                    newCell->displayValue = rawValue;
                 }
 
                 QXlsx::Format cellFormat = xlsxCell->format();
@@ -154,7 +154,7 @@ bool ExcelHandler::loadFromFile(const QString& fileName, ReportDataModel* model)
                         childCell->style.border = savedBorder;
 
                         // 清空内容
-                        childCell->value = QVariant();
+                        childCell->displayValue = QVariant();
                     }
                 }
             }
@@ -614,24 +614,39 @@ QVariant ExcelHandler::getCellValueForExport(const CellData* cell, ExportMode mo
     if (!cell) return QVariant();
 
     if (mode == EXPORT_DATA) {
-        // 导出数据：返回显示值
+        // ===== 导出数据模式 =====
+        // 1. 如果是已计算的公式，返回计算结果 (存储在 displayValue 中)
         if (cell->hasFormula && cell->formulaCalculated) {
-            return cell->value;
+            // 注意：这里假设公式计算结果存在 displayValue 中
+            // 如果存在 value，需要确认哪个是最新的
+            return cell->displayValue;
         }
+        // 2. 如果是数据标记 (#d#)
         else if (cell->cellType == CellData::DataMarker) {
-            return cell->queryExecuted && cell->querySuccess ? cell->value : QVariant("N/A");
+            // 如果查询成功，返回填充的数据 (存储在 displayValue 中)
+            // 如果查询失败或未执行，返回 "N/A"
+            return cell->queryExecuted && cell->querySuccess ? cell->displayValue : QVariant("N/A");
         }
-        else if (cell->isDataBinding) {
-            return cell->value;
+        // 3. 其他情况 (普通文本、数字、未计算公式、其他标记 #t# #Date#)
+        else {
+            return cell->displayValue; // 直接返回显示值
         }
-        return cell->value;
     }
     else {
-        // 导出模板：返回原始标记
-        if (cell->hasFormula) return cell->formula;
-        if (!cell->originalMarker.isEmpty()) return cell->originalMarker;
-        if (cell->isDataBinding) return cell->bindingKey;
-        return cell->value;
+        // ===== 导出模板模式 =====
+        // 1. 如果有公式，返回公式文本
+        if (cell->hasFormula) {
+            return cell->formula;
+        }
+        // 2. 如果有标记文本，返回标记文本
+        else if (!cell->markerText.isEmpty()) {
+            return cell->markerText;
+        }
+        // 3. 否则 (普通单元格)，返回其显示值
+        else {
+            return cell->displayValue;
+        }
+        // 移除对旧字段 originalMarker 和 bindingKey 的依赖
     }
 }
 
@@ -687,18 +702,22 @@ bool ExcelHandler::saveUnifiedQueryToFile(const QString& fileName,
                 valueToWrite = model->data(index, Qt::DisplayRole);
             }
             else {
-                // 导出模板：原始标记
+                // ===== 导出模板：使用新的逻辑 =====
                 const CellData* cell = model->getCell(row, col);
                 if (cell) {
+                    // 1. 如果有公式，返回公式文本
                     if (cell->hasFormula) {
                         valueToWrite = cell->formula;
                     }
-                    else if (!cell->originalMarker.isEmpty()) {
-                        valueToWrite = cell->originalMarker;
+                    // 2. 如果有标记文本，返回标记文本
+                    else if (!cell->markerText.isEmpty()) {
+                        valueToWrite = cell->markerText; // <-- 修改
                     }
+                    // 3. 否则 (普通单元格)，返回其显示值
                     else {
-                        valueToWrite = cell->value;
+                        valueToWrite = cell->displayValue; // <-- 修改
                     }
+                    // 移除对旧字段 originalMarker 的依赖
                 }
                 else {
                     // 虚拟单元格在导出模板时跳过
