@@ -189,10 +189,18 @@ QTime DayReportParser::getTaskTime(const QueryTask& task)
     for (int col = 0; col < totalCols; ++col) {
         CellData* cell = m_model->getCell(row, col);
         if (cell && cell->cellType == CellData::TimeMarker) {
-            QString timeStr = cell->displayValue.toString();
+            QString timeMarker = cell->markerText;
+            if (timeMarker.isEmpty()) {
+                // 兼容旧数据或意外情况
+                timeMarker = cell->displayValue.toString();
+            }
+            QString timeStr = extractTime(timeMarker);
             QTime time = QTime::fromString(timeStr, "HH:mm:ss");
             if (!time.isValid()) {
-                time = QTime::fromString(timeStr, "HH:mm");
+                // extractTime 应该总是返回 HH:mm:ss 或空
+                // 如果 timeStr 为空或格式仍不对，这里会捕获到
+                qWarning() << "getTaskTime: 解析时间失败：" << timeStr;
+                // time = QTime::fromString(timeStr, "HH:mm"); // 备用解析（extractTime 已处理）
             }
             return time;
         }

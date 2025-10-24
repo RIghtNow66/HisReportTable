@@ -244,16 +244,19 @@ void ReportDataModel::recalculateAllFormulas()
 {
     qDebug() << "开始增量计算公式...";
 
-    // 如果脏标记为空，说明是首次计算或全量刷新
-    if (m_dirtyFormulas.isEmpty()) {
-        qDebug() << "脏标记为空，标记所有公式";
-        for (auto it = m_cells.begin(); it != m_cells.end(); ++it) {
-            CellData* cell = it.value();
-            if (cell && cell->hasFormula) {
-                cell->formulaCalculated = false;
+    int foundUncalculated = 0;
+    for (auto it = m_cells.begin(); it != m_cells.end(); ++it) {
+        CellData* cell = it.value();
+        if (cell && cell->hasFormula && !cell->formulaCalculated) {
+            // 只有当它不在集合中时才插入，减少冗余
+            if (!m_dirtyFormulas.contains(it.key())) {
                 m_dirtyFormulas.insert(it.key());
+                foundUncalculated++;
             }
         }
+    }
+    if (foundUncalculated > 0) {
+        qDebug() << QString("额外找到了 %1 个未计算的(原始)公式").arg(foundUncalculated);
     }
 
     if (m_dirtyFormulas.isEmpty()) {

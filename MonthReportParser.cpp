@@ -499,11 +499,14 @@ void MonthReportParser::collectActualDays()
         for (int col = 0; col < m_model->columnCount(); ++col) {
             CellData* cell = m_model->getCell(row, col);
             if (cell && cell->cellType == CellData::TimeMarker) {
-                QString dayStr = cell->displayValue.toString();  // 使用 displayValue
-                bool ok;
-                int day = dayStr.toInt(&ok);
+                QString dayMarker = cell->markerText; // <-- [修复] 读取 markerText
+                if (dayMarker.isEmpty()) {
+                    dayMarker = cell->displayValue.toString();
+                }
 
-                if (ok && day >= 1 && day <= 31) {
+                int day = extractDay(dayMarker);
+
+                if (day > 0) {
                     QString fullDate = QString("%1-%2").arg(m_baseYearMonth).arg(day, 2, 10, QChar('0'));
                     QDate date = QDate::fromString(fullDate, "yyyy-MM-dd");
 
