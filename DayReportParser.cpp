@@ -101,9 +101,6 @@ bool DayReportParser::findDateMarker()
                 // 设置显示格式
                 cell->displayValue = text;
 
-                // 兼容性
-                cell->originalMarker = text;
-
                 qDebug() << QString("找到 #Date 标记: 行%1 列%2 → %3")
                     .arg(row).arg(col).arg(m_baseDate);
 
@@ -136,7 +133,6 @@ void DayReportParser::parseRow(int row)
                 cell->cellType = CellData::TimeMarker; // 仍然标记为 TimeMarker
                 cell->markerText = text;
                 cell->displayValue = text; // 显示原始错误标记
-                cell->originalMarker = text;
                 continue; // 跳过 m_currentTime 设置
             }
             m_currentTime = timeStr; // 仍然需要设置 m_currentTime 用于后续 #d#
@@ -144,7 +140,6 @@ void DayReportParser::parseRow(int row)
             cell->cellType = CellData::TimeMarker;
             cell->markerText = text;    // 设置 markerText
             cell->displayValue = text; // <-- 修改：初始 displayValue 等于 markerText
-            cell->originalMarker = text; // 兼容性
             continue;
         }
         // 遇到 #d# 数据标记
@@ -164,7 +159,6 @@ void DayReportParser::parseRow(int row)
             cell->markerText = text;                    // 保存原始标记
             cell->rtuId = rtuId;
             cell->displayValue = text;                  // 初始显示标记
-            cell->originalMarker = text;                // 兼容性
 
             QueryTask task;
             task.cell = cell;
@@ -611,15 +605,15 @@ void DayReportParser::onRescanCompleted(int newCount, int modifiedCount, int rem
 {
     Q_UNUSED(affectedRows)
 
-        // 如果有任何变化（新增、修改、删除），重新收集日期
-        if (newCount > 0 || modifiedCount > 0 || removedCount > 0) {
-            qDebug() << "========== 日报检测到标记变化，重新收集日期 ==========";
-            qDebug() << QString("变化统计：新增=%1, 修改=%2, 删除=%3")
-                .arg(newCount).arg(modifiedCount).arg(removedCount);
+    // 如果有任何变化（新增、修改、删除），重新收集日期
+    if (newCount > 0 || modifiedCount > 0 || removedCount > 0) {
+        qDebug() << "========== 日报检测到标记变化，重新收集日期 ==========";
+        qDebug() << QString("变化统计：新增=%1, 修改=%2, 删除=%3")
+            .arg(newCount).arg(modifiedCount).arg(removedCount);
 
-            // 重新收集所有日期
-            collectActualDays();
+        // 重新收集所有日期
+        collectActualDays();
 
-            qDebug() << "=================================================";
-        }
+        qDebug() << "=================================================";
+    }
 }

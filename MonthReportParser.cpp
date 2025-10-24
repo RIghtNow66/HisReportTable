@@ -109,7 +109,6 @@ bool MonthReportParser::findDateMarker()
                 cell->cellType = CellData::DateMarker;
                 cell->markerText = text;  // 保存原始标记
                 cell->displayValue = text; 
-                cell->originalMarker = text;  // 兼容性
 
                 foundDate1 = true;
             }
@@ -125,7 +124,6 @@ bool MonthReportParser::findDateMarker()
                 cell->cellType = CellData::TimeMarker;
                 cell->markerText = text;                // 保存原始标记
                 cell->displayValue = text;
-                cell->originalMarker = text;            // 兼容性
 
                 foundDate2 = true;
             }
@@ -236,7 +234,6 @@ void MonthReportParser::parseRow(int row)
                 cell->cellType = CellData::TimeMarker;
                 cell->markerText = text;
                 cell->displayValue = text; // <-- 修改
-                cell->originalMarker = text;
                 continue;
             }
 
@@ -246,7 +243,6 @@ void MonthReportParser::parseRow(int row)
             cell->cellType = CellData::TimeMarker;
             cell->markerText = text;                    // 保存原始标记
             cell->displayValue = text; // <-- 修改
-            cell->originalMarker = text;                // 兼容性
         }
         // 遇到 #d# 数据标记
         else if (isDataMarker(text)) {
@@ -265,7 +261,6 @@ void MonthReportParser::parseRow(int row)
             cell->markerText = text;      // 保存原始标记
             cell->rtuId = rtuId;
             cell->displayValue = text;    // 初始显示标记
-            cell->originalMarker = text;  // 兼容性
 
             QueryTask task;
             task.cell = cell;
@@ -626,21 +621,21 @@ bool MonthReportParser::getDateRange(QString& startDate, QString& endDate)
     return true;
 }
 
-void MonthReportParser::onRescanCompleted(int newCount, int modifiedCount, int removedCount,
-    const QSet<int>& affectedRows)
+void MonthReportParser::onRescanCompleted(int newCount, int modifiedCount, int removedCount, 
+                                         const QSet<int>& affectedRows)
 {
     if (newCount > 0 || modifiedCount > 0 || removedCount > 0) {
         qDebug() << "========== 月报增量更新日期集合 ==========";
         qDebug() << QString("受影响的行数：%1").arg(affectedRows.size());
-
+        
         updateActualDaysIncremental(affectedRows);
-
+        
         // 如果有删除操作，单独验证
         if (removedCount > 0) {
             qDebug() << "  检测到删除操作，验证日期集合完整性...";
             validateActualDays();
         }
-
+        
         qDebug() << QString("更新后的日期总数：%1").arg(m_actualDays.size());
         qDebug() << "==========================================";
     }

@@ -737,12 +737,9 @@ bool ReportDataModel::refreshTemplateReport(QProgressDialog* progress)
 
     // ===== 后续处理（所有需要填充数据的分支都会执行到这里）=====
 
-    clearDirtyMarks(); // 清理本次刷新处理过的脏标记
-    qDebug() << "脏标记已清理";
-
-    qDebug() << "开始计算公式...";
     recalculateAllFormulas();
     optimizeMemory();
+    clearDirtyMarks();
 
     // ===== 移动格式化循环到这里！=====
     // 只有在数据填充步骤执行过且成功后才进行格式化
@@ -860,10 +857,8 @@ bool ReportDataModel::setData(const QModelIndex& index, const QVariant& value, i
     QString oldRtuId = cell->rtuId;
 
     // ===== 清理旧状态 =====
-    cell->isDataBinding = false;
     cell->hasFormula = false;
     cell->formulaCalculated = false;
-    cell->bindingKey.clear();
 
     // ===== 处理公式 =====
     if (text.startsWith("#=#")) {
@@ -886,7 +881,6 @@ bool ReportDataModel::setData(const QModelIndex& index, const QVariant& value, i
         cell->displayValue = text;
         cell->queryExecuted = false;
         cell->querySuccess = false;
-        cell->originalMarker = text;
 
         // **关键修改**：更严格的脏标记判断
         bool needMarkDirty = false;
@@ -914,7 +908,6 @@ bool ReportDataModel::setData(const QModelIndex& index, const QVariant& value, i
         cell->cellType = CellData::TimeMarker;
         cell->markerText = text;
         cell->displayValue = text;
-        cell->originalMarker = text;
 
         // **关键修改**：时间标记变化也要标记脏
         bool needMarkDirty = false;
@@ -940,7 +933,6 @@ bool ReportDataModel::setData(const QModelIndex& index, const QVariant& value, i
         cell->cellType = CellData::DateMarker;
         cell->markerText = text;
         cell->displayValue = text;
-        cell->originalMarker = text;
 
         if (oldType != CellData::DateMarker || oldMarkerText != text) {
             markCellDirty(row, col);
@@ -964,7 +956,6 @@ bool ReportDataModel::setData(const QModelIndex& index, const QVariant& value, i
         cell->markerText.clear();
         cell->displayValue = value;
         cell->rtuId.clear();
-        cell->originalMarker.clear();
     }
 
     // ===== 标记依赖公式为脏 =====

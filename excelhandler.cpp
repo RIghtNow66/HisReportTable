@@ -96,7 +96,6 @@ bool ExcelHandler::loadFromFile(const QString& fileName, ReportDataModel* model)
                         newCell->displayValue = rawString;       // 显示公式文本
                     }
                     else if (rawString.startsWith("##") || rawString.startsWith("#")) {
-                        newCell->originalMarker = rawString;
                         newCell->displayValue = rawString;
                     }
                     else {

@@ -114,10 +114,10 @@ struct CellData {
     // ===== 兼容性字段（保留用于向后兼容，后续可删除） =====
     // ========================================
     QVariant value;                     // 已废弃，使用 displayValue 代替
-    QString originalMarker;             // 已废弃，使用 markerText 代替
-    bool isDataBinding;                 // 已废弃（旧实时模式）
-    QString bindingKey;                 // 已废弃（旧实时模式）
-    QString queryPath;                  // 已废弃
+    //QString originalMarker;             // 已废弃，使用 markerText 代替
+    //bool isDataBinding;                 // 已废弃（旧实时模式）
+    //QString bindingKey;                 // 已废弃（旧实时模式）
+    //QString queryPath;                  // 已废弃
 
     // ===== 构造函数 =====
     CellData()
@@ -133,10 +133,10 @@ struct CellData {
         , style()
         , mergedRange()
         , value()                       // 兼容性字段
-        , originalMarker()              // 兼容性字段
-        , isDataBinding(false)          // 兼容性字段
-        , bindingKey()                  // 兼容性字段
-        , queryPath()                   // 兼容性字段
+        //, originalMarker()              // 兼容性字段
+        //, isDataBinding(false)          // 兼容性字段
+        //, bindingKey()                  // 兼容性字段
+        //, queryPath()                   // 兼容性字段
     {
     }
 
@@ -188,10 +188,10 @@ struct CellData {
         if (!markerText.isEmpty()) {
             return markerText;  // 编辑时显示原始标记
         }
-        // 兼容旧数据
-        if (!originalMarker.isEmpty()) {
-            return originalMarker;
-        }
+        //// 兼容旧数据
+        //if (!originalMarker.isEmpty()) {
+        //    return originalMarker;
+        //}
         return displayValue.toString();  // 编辑普通值
     }
 
@@ -204,10 +204,10 @@ struct CellData {
         if (!markerText.isEmpty()) {
             return markerText;
         }
-        // 兼容旧数据：尝试从 originalMarker 读取
-        if (!originalMarker.isEmpty()) {
-            return originalMarker;
-        }
+        //// 兼容旧数据：尝试从 originalMarker 读取
+        //if (!originalMarker.isEmpty()) {
+        //    return originalMarker;
+        //}
         // 兼容旧数据：尝试从 value 读取
         if (!value.isNull() && !value.toString().isEmpty()) {
             return value.toString();
