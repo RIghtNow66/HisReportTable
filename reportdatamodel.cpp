@@ -1624,12 +1624,20 @@ void ReportDataModel::saveRefreshSnapshot()
 QSet<QString> ReportDataModel::getCurrentBindings() const
 {
     QSet<QString> bindings;
+
+    // 遍历所有数据标记单元格，收集它们的 RTU ID 作为"绑定键"
     for (auto it = m_cells.constBegin(); it != m_cells.constEnd(); ++it) {
         const CellData* cell = it.value();
-        if (cell && cell->isDataBinding) {
-            bindings.insert(cell->bindingKey);
+        if (cell && cell->cellType == CellData::DataMarker && !cell->rtuId.isEmpty()) {
+            // 使用位置+RTU ID 作为唯一标识（避免不同位置相同RTU被误判为无变化）
+            QString bindingKey = QString("%1,%2:%3")
+                .arg(it.key().x())
+                .arg(it.key().y())
+                .arg(cell->rtuId);
+            bindings.insert(bindingKey);
         }
     }
+
     return bindings;
 }
 
@@ -1675,10 +1683,13 @@ void ReportDataModel::optimizeMemory()
         // 清理条件：
         // 1. 无内容
         // 2. 无公式
-        // 3. 无数据绑定
+        // 3. 非数据标记单元格（替代原来的 !isDataBinding）
         // 4. 非合并单元格
         // 5. 使用默认样式
-        bool isEmpty = cell->value.isNull() || cell->value.toString().isEmpty();
+        bool isEmpty = cell->displayValue.isNull() ||
+            (cell->displayValue.type() == QVariant::String &&
+                cell->displayValue.toString().isEmpty());
+
         bool isDefaultStyle =
             cell->style.backgroundColor == defaultStyle.backgroundColor &&
             cell->style.textColor == defaultStyle.textColor &&
@@ -1687,8 +1698,7 @@ void ReportDataModel::optimizeMemory()
 
         if (isEmpty &&
             !cell->hasFormula &&
-            !cell->isDataBinding &&
-            cell->cellType == CellData::NormalCell &&
+            cell->cellType == CellData::NormalCell &&  // 非数据标记
             !cell->mergedRange.isMerged() &&
             isDefaultStyle) {
             emptyKeys.append(it.key());
@@ -1704,7 +1714,6 @@ void ReportDataModel::optimizeMemory()
         qDebug() << QString("内存优化：清理 %1 个空单元格").arg(emptyKeys.size());
     }
 }
-
 void ReportDataModel::markFormulaDirty(int row, int col)
 {
     const CellData* cell = getCell(row, col);
