@@ -632,278 +632,6 @@ QVariant ReportDataModel::data(const QModelIndex& index, int role) const
     return QVariant();
 }
 
-
-//bool ReportDataModel::refreshTemplateReport(QProgressDialog* progress)
-//{
-//    // ===== 【步骤1】检测变化类型 =====
-//    ChangeType changeType = detectChanges();
-//
-//    QString changeMsg;
-//    bool needQuery = false;
-//
-//    switch (changeType) {
-//    case NO_CHANGE:
-//    {
-//        changeMsg = "数据已是最新，无需刷新。";
-//
-//        QMessageBox msgBox(QMessageBox::Information, "无需刷新", changeMsg, QMessageBox::NoButton, nullptr);
-//        msgBox.setStandardButtons(QMessageBox::Ok);
-//        msgBox.setButtonText(QMessageBox::Ok, "确定");
-//        msgBox.exec();
-//
-//        saveRefreshSnapshot();
-//        return true;
-//    }
-//    case FORMULA_ONLY: {
-//        int newFormulaCount = 0;
-//        for (auto it = m_cells.constBegin(); it != m_cells.constEnd(); ++it) {
-//            if (it.value() && it.value()->hasFormula && !it.value()->formulaCalculated) {
-//                newFormulaCount++;
-//            }
-//        }
-//        changeMsg = QString("检测到 %1 个新增公式，是否计算？\n\n注意：不会重新查询数据。")
-//            .arg(newFormulaCount);
-//        needQuery = false;
-//        break;
-//    }
-//
-//    case BINDING_ONLY: {
-//        int newMarkerCount = 0;
-//        if (m_reportType == DAY_REPORT || m_reportType == MONTH_REPORT) {
-//            for (auto it = m_cells.constBegin(); it != m_cells.constEnd(); ++it) {
-//                const CellData* cell = it.value();
-//                if (cell && cell->cellType == CellData::DataMarker && !cell->queryExecuted) {
-//                    newMarkerCount++;
-//                }
-//            }
-//        }
-//        else {
-//            QList<QString> newBindings = getNewBindings();
-//            newMarkerCount = newBindings.size();
-//        }
-//
-//        changeMsg = QString("检测到 %1 个新增数据标记，是否查询？\n\n将查询新数据并重新计算所有公式。")
-//            .arg(newMarkerCount);
-//        needQuery = true;
-//        break;
-//    }
-//
-//    case MIXED_CHANGE: {
-//        if (m_isFirstRefresh) {
-//            needQuery = true;
-//        }
-//        else {
-//            int newFormulaCount = 0;
-//            for (auto it = m_cells.constBegin(); it != m_cells.constEnd(); ++it) {
-//                if (it.value() && it.value()->hasFormula && !it.value()->formulaCalculated) {
-//                    newFormulaCount++;
-//                }
-//            }
-//
-//            int newDataCount = 0;
-//            if (m_reportType == DAY_REPORT || m_reportType == MONTH_REPORT) {
-//                for (auto it = m_cells.constBegin(); it != m_cells.constEnd(); ++it) {
-//                    const CellData* cell = it.value();
-//                    if (cell && cell->cellType == CellData::DataMarker && !cell->queryExecuted) {
-//                        newDataCount++;
-//                    }
-//                }
-//            }
-//            else {
-//                newDataCount = getNewBindings().size();
-//            }
-//
-//            changeMsg = QString("检测到数据变更：\n"
-//                "• 新增数据标记: %1 个\n"
-//                "• 新增公式: %2 个\n\n"
-//                "是否执行完整刷新？")
-//                .arg(newDataCount)
-//                .arg(newFormulaCount);
-//            needQuery = true;
-//        }
-//        break;
-//    }
-//    }
-//
-//    // ===== 【步骤2】用户确认（首次刷新跳过） =====
-//    if (!m_isFirstRefresh && !changeMsg.isEmpty()) {
-//        QMessageBox msgBox(QMessageBox::Question, "确认刷新", changeMsg,
-//            QMessageBox::NoButton, nullptr); // 注意：父窗口为 nullptr
-//        QPushButton* yesBtn = msgBox.addButton("是", QMessageBox::YesRole);
-//        QPushButton* noBtn = msgBox.addButton("否", QMessageBox::NoRole);
-//        msgBox.setDefaultButton(yesBtn); // 保持原始默认值为 Yes
-//
-//        msgBox.exec();
-//
-//        if (msgBox.clickedButton() == noBtn) {
-//            return false;
-//        }
-//    }
-//
-//    // ===== 【步骤3】缓存有效性检查 =====
-//    if (needQuery && (m_reportType == DAY_REPORT || m_reportType == MONTH_REPORT) && m_parser) {
-//        if (!m_parser->isCacheValid()) {
-//            qDebug() << "缓存已过期，将重新查询";
-//            m_parser->invalidateCache();
-//        }
-//    }
-//
-//    // ===== 【步骤4】执行查询操作 =====
-//    bool completedSuccessfully = false;
-//    int actualSuccessCount = 0;
-//
-//    if (needQuery) {
-//        // 需要查询数据
-//        if ((m_reportType == DAY_REPORT || m_reportType == MONTH_REPORT) && m_parser) {
-//            completedSuccessfully = m_parser->executeQueries(progress);
-//
-//            // 统计实际成功的数据点
-//            for (auto it = m_cells.constBegin(); it != m_cells.constEnd(); ++it) {
-//                const CellData* cell = it.value();
-//                if (cell && cell->cellType == CellData::DataMarker &&
-//                    cell->queryExecuted && cell->querySuccess) {
-//                    actualSuccessCount++;
-//                }
-//            }
-//        }
-//        else if (m_reportType == NORMAL_EXCEL) {
-//            qDebug() << "普通Excel不支持数据查询";
-//            completedSuccessfully = true;
-//        }
-//    }
-//    else {
-//        // 不需要查询，直接标记为成功
-//        completedSuccessfully = true;
-//    }
-//
-//    // ===== 【步骤5】计算公式（只执行一次）===== 
-//    if (completedSuccessfully) {
-//        qDebug() << "数据填充完成，开始计算公式...";
-//        recalculateAllFormulas();
-//        optimizeMemory();
-//    }
-//
-//    // ===== 【步骤6】保存快照并决定是否进入运行模式 =====
-//    bool shouldEnterRunMode = false;
-//
-//    if ((m_reportType == DAY_REPORT || m_reportType == MONTH_REPORT) && m_parser) {
-//        int totalTasks = m_parser->getPendingQueryCount();
-//        if (totalTasks > 0) {
-//            double successRate = static_cast<double>(actualSuccessCount) / totalTasks;
-//            if (successRate >= 0.5) {
-//                saveRefreshSnapshot();
-//                shouldEnterRunMode = true;
-//                qDebug() << QString("保存快照: 成功率 %1%").arg(successRate * 100, 0, 'f', 1);
-//            }
-//            else {
-//                shouldEnterRunMode = false;
-//                qWarning() << QString("成功率过低 (%1%)，不保存快照").arg(successRate * 100, 0, 'f', 1);
-//            }
-//        }
-//        else {
-//            saveRefreshSnapshot();
-//            shouldEnterRunMode = true;
-//        }
-//    }
-//    else {
-//        saveRefreshSnapshot();
-//        shouldEnterRunMode = true;
-//    }
-//
-//    if (shouldEnterRunMode) {
-//        setEditMode(false);
-//    }
-//
-//    return completedSuccessfully;
-//}
-
-//bool ReportDataModel::refreshTemplateReport(QProgressDialog* progress)
-//{
-//    if (!m_parser) {
-//        qWarning() << "解析器为空";
-//        return false;
-//    }
-//
-//    // ===== 【步骤1】检测变化类型 =====
-//    ChangeType changeType = detectChanges();
-//
-//    bool hasDirtyCells = !m_dirtyCells.isEmpty();
-//    bool hasNewFormulas = (changeType == FORMULA_ONLY || changeType == MIXED_CHANGE);
-//    bool hasDataChanges = (changeType == BINDING_ONLY || changeType == MIXED_CHANGE || hasDirtyCells);
-//
-//    qDebug() << QString("变化检测: changeType=%1, 脏单元格=%2, 新增公式=%3, 数据变化=%4")
-//        .arg(changeType).arg(m_dirtyCells.size()).arg(hasNewFormulas).arg(hasDataChanges);
-//
-//    // ===== 【步骤2】处理无变化情况 =====
-//    if (changeType == NO_CHANGE && !hasDirtyCells) {
-//        QString msg = "数据已是最新，无需刷新。";
-//        QMessageBox::information(nullptr, "无需刷新", msg);
-//        return true;
-//    }
-//
-//    // ===== 【步骤3】处理仅公式变化 =====
-//    if (!hasDataChanges && hasNewFormulas) {
-//        qDebug() << "仅公式变化，只计算公式";
-//        recalculateAllFormulas();
-//        saveRefreshSnapshot();
-//        notifyDataChanged();
-//        return true;
-//    }
-//
-//    // ===== 【步骤4】处理数据变化（有脏单元格或新增绑定）=====
-//    bool needQuery = false;
-//
-//    if (hasDirtyCells) {
-//        qDebug() << QString("检测到 %1 个脏单元格，需要增量查询").arg(m_dirtyCells.size());
-//
-//        // 增量扫描
-//        m_parser->rescanDirtyCells(m_dirtyCells);
-//        needQuery = true;
-//    }
-//    else if (changeType == BINDING_ONLY || changeType == MIXED_CHANGE) {
-//        // 没有脏单元格，但快照检测到新增绑定（用户可能恢复配置后重新添加）
-//        qDebug() << "检测到新增绑定，需要全量查询";
-//        //m_parser->clearCache();
-//        if (!m_parser->scanAndParse()) {
-//            qWarning() << "扫描失败";
-//            return false;
-//        }
-//        needQuery = true;
-//    }
-//
-//    // ===== 【步骤5】执行查询 =====
-//    bool querySuccess = true;
-//    if (needQuery) {
-//        qDebug() << "开始执行查询...";
-//        querySuccess = m_parser->executeQueries(progress);
-//
-//        if (!querySuccess) {
-//            qWarning() << "查询失败";
-//        }
-//    }
-//
-//    // ===== 【步骤6】从缓存填充所有数据 =====
-//    bool fillSuccess = fillDataFromCache(progress);
-//
-//    // ===== 【步骤7】清理脏标记 =====
-//    clearDirtyMarks();
-//    qDebug() << "脏标记已清理";
-//
-//    // ===== 【步骤8】计算公式 =====
-//    if (fillSuccess || querySuccess) {
-//        qDebug() << "开始计算公式...";
-//        recalculateAllFormulas();
-//        optimizeMemory();
-//    }
-//
-//    // ===== 【步骤9】保存快照并进入运行模式 =====
-//    saveRefreshSnapshot();
-//    setEditMode(false);
-//
-//    notifyDataChanged();
-//    return fillSuccess || querySuccess;
-//}
-
 bool ReportDataModel::refreshTemplateReport(QProgressDialog* progress)
 {
     if (!m_parser) {
@@ -911,167 +639,135 @@ bool ReportDataModel::refreshTemplateReport(QProgressDialog* progress)
         return false;
     }
 
-    // ===== 【步骤1】检测变化类型 =====
-    // 注意：首次刷新时，即使 changeType 是 MIXED_CHANGE，也不一定需要重新扫描
     ChangeType changeType = detectChanges();
-
-    bool hasDirtyCells = !m_dirtyCells.isEmpty(); // 用户是否编辑过？
+    bool hasDirtyCells = !m_dirtyCells.isEmpty();
     bool hasNewFormulas = (changeType == FORMULA_ONLY || changeType == MIXED_CHANGE);
 
     qDebug() << QString("变化检测: isFirstRefresh=%1, changeType=%2, 脏单元格=%3, 新增公式=%4")
         .arg(m_isFirstRefresh).arg(changeType).arg(m_dirtyCells.size()).arg(hasNewFormulas);
 
-    // ===== 【步骤2 - 核心修改】处理首次刷新且无编辑的情况 =====
-    // 如果是第一次刷新 (导入刚完成，预查询已结束)，并且用户没有做任何修改 (没有脏单元格)
-    // 那么我们不需要重新扫描或查询，直接用预查询的结果填充缓存即可。
+    bool fillSuccess = false; // 保存填充操作的结果
+    bool querySuccess = true; // 假设查询成功，除非实际失败
+
+    // ===== 分支 1：首次刷新（或还原后）且无编辑 =====
     if (m_isFirstRefresh && !hasDirtyCells) {
-        qDebug() << "首次刷新且无脏单元格，直接从缓存填充";
-
-        // 直接调用 fillDataFromCache，它会使用预查询填充的缓存
-        bool fillSuccess = fillDataFromCache(progress);
-
-        if (progress && progress->wasCanceled()) {
-            qDebug() << "填充被用户取消";
-            return false;
+        qDebug() << "首次刷新/还原后刷新 且 无脏单元格，直接从缓存填充";
+        fillSuccess = fillDataFromCache(progress);
+        if (progress && progress->wasCanceled()) return false;
+        if (!fillSuccess) {
+            qWarning() << "首次刷新/还原后刷新 时从缓存填充数据失败！";
+            // QMessageBox::warning(...); // 错误消息已移到后面统一处理
         }
-
-        // 填充成功后，才进行后续步骤
-        if (fillSuccess) {
-            clearDirtyMarks(); // 清理可能存在的（理论上没有）脏标记
-            qDebug() << "开始计算公式...";
-            recalculateAllFormulas(); // 计算公式
-            optimizeMemory();
-            saveRefreshSnapshot(); // 保存快照，标记不再是首次刷新
-            setEditMode(false);    // 进入运行模式
-            notifyDataChanged();   // 更新UI
-        }
-        // 如果 fillDataFromCache 失败 (比如缓存为空？)，也应该告知用户
-        else {
-            qWarning() << "首次刷新时从缓存填充数据失败！";
-            QMessageBox::warning(nullptr, "刷新失败", "无法从缓存填充数据，请检查预查询是否成功完成。");
-            // 这里可以选择是否还原模板，暂时不还原
-        }
-        return fillSuccess; // 返回填充结果
     }
-
-    // ===== 【步骤3】处理后续刷新 - 无变化情况 (基本不变) =====
-    if (!m_isFirstRefresh && changeType == NO_CHANGE && !hasDirtyCells) {
-        QString msg = "数据已是最新，无需刷新。";
-        QMessageBox::information(nullptr, "无需刷新", msg);
-        // saveRefreshSnapshot(); // 可以在这里更新一下快照时间戳，如果需要的话
-        return true;
+    // ===== 分支 2：非首次刷新，无变化 =====
+    else if (!m_isFirstRefresh && changeType == NO_CHANGE && !hasDirtyCells) {
+        qDebug() << "非首次刷新，无变化";
+        QMessageBox::information(nullptr, "无需刷新", "数据已是最新，无需刷新。");
+        return true; // 无需后续处理，直接返回成功
     }
-
-    // ===== 【步骤4】处理后续刷新 - 仅公式变化 (基本不变) =====
-    if (!hasDirtyCells && changeType == FORMULA_ONLY) { // 确认没有数据变化
+    // ===== 分支 3：仅公式变化 =====
+    else if (!hasDirtyCells && changeType == FORMULA_ONLY) {
         qDebug() << "仅公式变化，只计算公式";
         recalculateAllFormulas();
-        saveRefreshSnapshot(); // 保存快照，因为公式结构变了
+        saveRefreshSnapshot(); // 仅公式变化也需保存快照
         notifyDataChanged();
-        return true;
+        return true; // 公式计算完成，返回成功
     }
+    // ===== 分支 4：需要处理数据变化（脏单元格或非首次的绑定变化）=====
+    else {
+        qDebug() << "需要处理数据变化（脏单元格 或 非首次的绑定变化）";
+        bool needQuery = false;
+        bool scanNeeded = false;
 
-    // ===== 【步骤5】处理后续刷新 - 需要处理数据变化 (有脏单元格或新增绑定) =====
-    // 这部分逻辑基本可以保持，因为它处理的是用户编辑后的情况
-    bool needQuery = false; // 是否需要调用 parser->executeQueries
-    bool scanNeeded = false; // 是否需要调用 parser->scanAndParse (通常只有绑定变化时需要)
-
-    if (hasDirtyCells) {
-        qDebug() << QString("检测到 %1 个脏单元格，进行增量扫描/查询").arg(m_dirtyCells.size());
-        m_parser->rescanDirtyCells(m_dirtyCells); // 更新内部查询任务列表
-        // 检查缓存是否仍然有效，如果无效或增量扫描发现了需要新查询的任务，则需要查询
-        if (!m_parser->isCacheValid()) { // 或更复杂的逻辑判断是否需要查询
-            qDebug() << "缓存失效或需要新数据，准备查询";
+        if (hasDirtyCells) {
+            qDebug() << QString("检测到 %1 个脏单元格，进行增量扫描/查询").arg(m_dirtyCells.size());
+            m_parser->rescanDirtyCells(m_dirtyCells);
+            if (!m_parser->isCacheValid()) {
+                qDebug() << "缓存失效或需要新数据，准备查询";
+                m_parser->invalidateCache(); // 清缓存通常意味着需要重新查询
+                needQuery = true;
+            }
+            else {
+                // 即使缓存有效，如果 rescan 发现了新任务，可能也需要查询
+                // 这里简化处理：认为有脏单元格就需要尝试查询（executeQueries内部会优化）
+                needQuery = true;
+                qDebug() << "缓存可能有效，但仍尝试执行查询（内部会优化）";
+            }
+        }
+        else if (!m_isFirstRefresh && (changeType == BINDING_ONLY || changeType == MIXED_CHANGE)) {
+            qDebug() << "检测到绑定变化(非首次刷新)，需要重新扫描并查询";
             m_parser->invalidateCache();
+            scanNeeded = true;
             needQuery = true;
         }
-        else {
-            qDebug() << "缓存有效，尝试仅从缓存填充脏单元格对应数据";
-            needQuery = false; // 假设增量扫描的任务可以在缓存中找到
+
+        if (scanNeeded) {
+            qDebug() << "执行重新扫描...";
+            if (!m_parser->scanAndParse()) {
+                qWarning() << "重新扫描失败";
+                QMessageBox::warning(nullptr, "扫描失败", "重新扫描模板标记失败，请检查模板。");
+                return false; // 扫描失败则无法继续
+            }
         }
-        scanNeeded = false; // 增量扫描代替了全量扫描
-    }
-    // 处理非首次刷新时，绑定发生变化的情况（例如还原后重新添加标记）
-    else if (!m_isFirstRefresh && (changeType == BINDING_ONLY || changeType == MIXED_CHANGE))
-    {
-        qDebug() << "检测到绑定变化(非首次刷新)，需要重新扫描并查询";
-        m_parser->invalidateCache(); // 绑定变了，缓存可能需要更新
-        scanNeeded = true;           // 需要重新构建查询任务列表
-        needQuery = true;            // 需要根据新的任务列表查询
-    }
 
-    // ===== 【步骤6】执行扫描 (如果需要) =====
-    if (scanNeeded) {
-        qDebug() << "执行重新扫描...";
-        if (!m_parser->scanAndParse()) { // 只有在明确需要时才重新扫描
-            qWarning() << "重新扫描失败";
-            QMessageBox::warning(nullptr, "扫描失败", "重新扫描模板标记失败，请检查模板。");
-            return false;
+        if (needQuery) {
+            qDebug() << "开始执行查询 (executeQueries)...";
+            querySuccess = m_parser->executeQueries(progress);
+            if (!querySuccess && progress && progress->wasCanceled()) return false;
+            if (!querySuccess) qWarning() << "查询失败/部分失败";
+            // 即使查询失败，也继续尝试填充
         }
-        // 注意：如果 scanAndParse 内部启动了异步查询，这里的逻辑需要调整
-        // 假设 scanAndParse 只准备任务列表，不自动启动查询
+
+        qDebug() << "开始从缓存填充数据 (fillDataFromCache)...";
+        fillSuccess = fillDataFromCache(progress);
+        if (progress && progress->wasCanceled()) return false;
     }
 
-    // ===== 【步骤7】执行查询 (如果需要) =====
-    bool querySuccess = true;
-    if (needQuery) {
-        qDebug() << "开始执行查询 (executeQueries)...";
-        // executeQueries 应该内部处理缓存检查，只有缓存没有或失效时才真正查库
-        querySuccess = m_parser->executeQueries(progress);
+    // ===== 后续处理（所有需要填充数据的分支都会执行到这里）=====
 
-        if (!querySuccess && progress && progress->wasCanceled()) {
-            qDebug() << "查询被用户取消";
-            return false; // 取消时直接返回
-        }
-        if (!querySuccess) {
-            qWarning() << "查询失败/部分失败";
-            // 即使查询失败，也继续尝试填充，可能会显示 N/A
-        }
-    }
-
-    // ===== 【步骤8】从缓存填充所有数据 (总是执行，确保UI更新) =====
-    qDebug() << "开始从缓存填充数据 (fillDataFromCache)...";
-    bool fillSuccess = fillDataFromCache(progress);
-    if (progress && progress->wasCanceled()) {
-        qDebug() << "填充被用户取消";
-        return false; // 取消时直接返回
-    }
-
-    // ===== 【步骤9】清理脏标记 =====
-    clearDirtyMarks();
+    clearDirtyMarks(); // 清理本次刷新处理过的脏标记
     qDebug() << "脏标记已清理";
 
-    // ===== 【步骤10】计算公式 =====
     qDebug() << "开始计算公式...";
     recalculateAllFormulas();
     optimizeMemory();
 
-    // ===== 【步骤11】保存快照并进入运行模式 =====
-    // 只有在填充成功（意味着数据显示出来了，即使部分是N/A）时才保存快照和切换模式
+    // ===== 移动格式化循环到这里！=====
+    // 只有在数据填充步骤执行过且成功后才进行格式化
+    if (fillSuccess && m_parser) {
+        qDebug() << "刷新成功，格式化 Date/Time 标记用于显示..."; // <-- 日志点 A
+        int formattedCount = 0;
+        for (auto it = m_cells.begin(); it != m_cells.end(); ++it) {
+            CellData* cell = it.value();
+            if (cell && (cell->cellType == CellData::DateMarker || cell->cellType == CellData::TimeMarker)) {
+                // <-- 日志点 B (确认循环进入)
+                // qDebug() << "Formatting cell (" << it.key().x() << "," << it.key().y() << ")";
+                QVariant formattedValue = m_parser->formatDisplayValueForMarker(cell);
+                // <-- 日志点 C (确认返回值)
+                // qDebug() << "  Formatted value:" << formattedValue;
+                if (cell->displayValue != formattedValue) {
+                    cell->displayValue = formattedValue;
+                    formattedCount++;
+                }
+            }
+        }
+        qDebug() << "格式化了" << formattedCount << "个 Date/Time 标记的显示值。"; // <-- 日志点 D
+    }
+    // ===================================
+
+    // ===== 保存快照并进入运行模式 =====
     if (fillSuccess) {
-        saveRefreshSnapshot();
+        saveRefreshSnapshot(); // 保存当前状态（包括格式化后的displayValue）
         setEditMode(false); // 进入运行模式
         qDebug() << "刷新成功完成，进入运行模式";
     }
     else {
         qWarning() << "填充数据失败，保持编辑模式";
-        // 可能需要给用户更明确的错误提示
         QMessageBox::warning(nullptr, "刷新失败", "从缓存填充数据失败。");
     }
 
-    notifyDataChanged(); // 确保UI总是更新
-    return fillSuccess; // 返回填充操作是否成功
-}
-
-//  检查是否有##绑定
-bool ReportDataModel::hasDataBindings() const
-{
-    for (auto it = m_cells.constBegin(); it != m_cells.constEnd(); ++it) {
-        if (it.value() && it.value()->isDataBinding) {
-            return true;
-        }
-    }
-    return false;
+    notifyDataChanged(); // 通知UI更新最终状态
+    return fillSuccess;
 }
 
 //QString ReportDataModel::extractRtuId(const QString& text)
@@ -1177,12 +873,7 @@ bool ReportDataModel::setData(const QModelIndex& index, const QVariant& value, i
     else if (text.startsWith("#t#", Qt::CaseInsensitive)) {
         cell->cellType = CellData::TimeMarker;
         cell->markerText = text;          // 保存原始标记
-
-        // 解析时间并设置显示值
-        QString timeStr = m_parser->extractTime(text);
-        cell->displayValue = timeStr.left(5);  // 显示 "00:00"
-
-        // 兼容性
+        cell->displayValue = text;
         cell->originalMarker = text;
 
         if (oldType != CellData::TimeMarker) {
@@ -1194,7 +885,6 @@ bool ReportDataModel::setData(const QModelIndex& index, const QVariant& value, i
         cell->cellType = CellData::DateMarker;
         cell->markerText = text;          // 保存原始标记
         cell->displayValue = text;        // 暂时显示原始标记（解析器会更新）
-
         // 兼容性
         cell->originalMarker = text;
 

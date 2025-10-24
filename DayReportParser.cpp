@@ -99,16 +99,7 @@ bool DayReportParser::findDateMarker()
                 cell->markerText = text;  // 保存原始标记
 
                 // 设置显示格式
-                QDate date = QDate::fromString(m_baseDate, "yyyy-MM-dd");
-                if (date.isValid()) {
-                    cell->displayValue = QString("%1年%2月%3日")
-                        .arg(date.year())
-                        .arg(date.month())
-                        .arg(date.day());
-                }
-                else {
-                    cell->displayValue = text;  // 无效日期保持原样
-                }
+                cell->displayValue = text;
 
                 // 兼容性
                 cell->originalMarker = text;
@@ -139,15 +130,22 @@ void DayReportParser::parseRow(int row)
         // 遇到 #t# 时间标记
         if (isTimeMarker(text)) {
             QString timeStr = extractTime(text);
-            m_currentTime = timeStr;
+            // 检查提取是否成功
+            if(timeStr.isEmpty()) {
+                qWarning() << "行" << row << "列" << col << ": 无法从标记提取有效时间:" << text;
+                cell->cellType = CellData::TimeMarker; // 仍然标记为 TimeMarker
+                cell->markerText = text;
+                cell->displayValue = text; // 显示原始错误标记
+                cell->originalMarker = text;
+                continue; // 跳过 m_currentTime 设置
+            }
+            m_currentTime = timeStr; // 仍然需要设置 m_currentTime 用于后续 #d#
 
             cell->cellType = CellData::TimeMarker;
-            cell->markerText = text;                    // 保存原始标记
-            cell->displayValue = timeStr.left(5);       // 显示 "00:00"
-            cell->originalMarker = text;                // 兼容性
-
-            qDebug() << QString("行%1 列%2: 时间标记 %3 → %4")
-                .arg(row).arg(col).arg(text).arg(m_currentTime);
+            cell->markerText = text;    // 设置 markerText
+            cell->displayValue = text; // <-- 修改：初始 displayValue 等于 markerText
+            cell->originalMarker = text; // 兼容性
+            continue;
         }
         // 遇到 #d# 数据标记
         else if (isDataMarker(text)) {
@@ -201,6 +199,57 @@ QTime DayReportParser::getTaskTime(const QueryTask& task)
     }
 
     return QTime();
+}
+
+QVariant DayReportParser::formatDisplayValueForMarker(const CellData* cell) const
+{
+    qDebug() << "[DayParser::format] formatDisplayValueForMarker";
+    if (!cell || cell->markerText.isEmpty()) {
+        return cell ? cell->displayValue : QVariant(); // 无标记或cell为空，返回当前值
+    }
+
+    // --- 处理 #Date ---
+    if (isDateMarker(cell->markerText)) { // 使用 DayReportParser 的 isDateMarker
+        QString dateStr = extractDate(cell->markerText); // 调用 DayReportParser 的 extractDate
+        QDate date = QDate::fromString(dateStr, "yyyy-MM-dd");
+        if (date.isValid()) {
+            return QString("%1年%2月%3日")
+                .arg(date.year())
+                .arg(date.month())
+                .arg(date.day());
+        }
+        else {
+            qWarning() << "formatDisplayValueForMarker (Day): Invalid date extracted:" << dateStr << "from marker" << cell->markerText;
+            return cell->markerText; // 解析失败返回原始标记
+        }
+    }
+    // --- 处理 #t# (时间) ---
+    else if (isTimeMarker(cell->markerText)) { // 使用基类的 isTimeMarker
+        QString timeStr_HHmmss = extractTime(cell->markerText); // 调用 DayReportParser 的 extractTime
+        if (!timeStr_HHmmss.isEmpty()) {
+            QTime time = QTime::fromString(timeStr_HHmmss, "HH:mm:ss");
+            if (time.isValid()) {
+                return time.toString("HH:mm"); // 返回 HH:mm 格式
+            }
+            else {
+                // 这不应该发生，因为 extractTime 内部已经做了校验
+                qWarning() << "formatDisplayValueForMarker (Day): Failed to parse time from extracted string:" << timeStr_HHmmss;
+                return cell->markerText; // 解析失败返回原始标记
+            }
+        }
+        else {
+            // extractTime 返回空，说明原始标记就有问题
+            qWarning() << "formatDisplayValueForMarker (Day): extractTime failed for marker:" << cell->markerText;
+            return cell->markerText; // 返回原始标记
+        }
+    }
+    // --- 处理 #d# (数据标记，格式化时不改变) ---
+    else if (isDataMarker(cell->markerText)) {
+        return cell->markerText;
+    }
+
+    // 如果以上都不是，返回原始标记
+    return cell->markerText;
 }
 
 QString DayReportParser::extractTime(const QString& text) const
@@ -329,7 +378,7 @@ bool DayReportParser::isDateMarker(const QString& text) const
     return text.startsWith("#Date:", Qt::CaseInsensitive);
 }
 
-QString DayReportParser::extractDate(const QString& text)
+QString DayReportParser::extractDate(const QString& text) const
 {
     QString dateStr = text.mid(6).trimmed();
 
@@ -353,4 +402,165 @@ QString DayReportParser::findTimeForDataMarker(int row, int col)
         }
     }
     return QString();
+}
+
+QList<BaseReportParser::TimeBlock> DayReportParser::identifyTimeBlocks()
+{
+    qDebug() << "【日报】identifyTimeBlocks() 被调用";
+    QList<TimeBlock> blocks;
+
+    if (m_queryTasks.isEmpty()) {
+        return blocks;
+    }
+
+    // 按时间排序
+    QList<QPair<QTime, int>> sortedTasks;
+
+    for (int i = 0; i < m_queryTasks.size(); ++i) {
+        QTime time = getTaskTime(m_queryTasks[i]);
+        if (time.isValid()) {
+            sortedTasks.append(qMakePair(time, i));
+        }
+    }
+
+    std::sort(sortedTasks.begin(), sortedTasks.end(),
+        [](const QPair<QTime, int>& a, const QPair<QTime, int>& b) {
+            return a.first < b.first;
+        });
+
+    if (sortedTasks.isEmpty()) {
+        return blocks;
+    }
+
+    // 识别连续块
+    TimeBlock currentBlock;
+    currentBlock.startTime = sortedTasks[0].first;
+    currentBlock.endTime = sortedTasks[0].first;
+    currentBlock.taskIndices.append(sortedTasks[0].second);
+
+    const int CONTINUITY_THRESHOLD = 5 * 60;  // 5分钟
+
+    for (int i = 1; i < sortedTasks.size(); ++i) {
+        QTime time = sortedTasks[i].first;
+        int taskIdx = sortedTasks[i].second;
+        int gapSeconds = currentBlock.endTime.secsTo(time);
+
+        if (gapSeconds <= CONTINUITY_THRESHOLD) {
+            currentBlock.endTime = time;
+            currentBlock.taskIndices.append(taskIdx);
+        }
+        else {
+            blocks.append(currentBlock);
+            currentBlock = TimeBlock();
+            currentBlock.startTime = time;
+            currentBlock.endTime = time;
+            currentBlock.taskIndices.append(taskIdx);
+        }
+    }
+
+    blocks.append(currentBlock);
+    return blocks;
+}
+
+bool DayReportParser::analyzeAndPrefetch()
+{
+    // 1. 识别时间块
+    QList<TimeBlock> blocks = identifyTimeBlocks();
+
+    if (m_cancelRequested.loadAcquire()) return false;
+
+    if (blocks.isEmpty()) {
+        qWarning() << "未识别到有效时间块";
+        return false;
+    }
+
+    // 2. 收集所有唯一的RTU
+    QSet<QString> uniqueRTUs;
+    for (const QueryTask& task : m_queryTasks) {
+        uniqueRTUs.insert(task.cell->rtuId);
+    }
+    QString rtuList = uniqueRTUs.values().join(",");
+
+    qDebug() << "RTU数量：" << uniqueRTUs.size();
+
+    // 3. 决策查询策略
+    QList<TimeBlock> mergedBlocks;
+
+    if (blocks.size() == 1) {
+        mergedBlocks.append(blocks[0]);
+    }
+    else {
+        TimeBlock currentMerged = blocks[0];
+
+        for (int i = 1; i < blocks.size(); ++i) {
+            if (shouldMergeBlocks(currentMerged, blocks[i])) {
+
+                currentMerged.endTime = blocks[i].endTime;
+                currentMerged.taskIndices.append(blocks[i].taskIndices);
+            }
+            else {
+                mergedBlocks.append(currentMerged);
+                currentMerged = blocks[i];
+            }
+        }
+        mergedBlocks.append(currentMerged);
+    }
+
+    qDebug() << "查询策略：" << mergedBlocks.size() << "次查询";
+
+    // 4. 执行查询
+    int successCount = 0;  // 改用成功计数
+    int failCount = 0;     // 失败计数
+    int intervalSeconds = getQueryIntervalSeconds();
+
+    for (int i = 0; i < mergedBlocks.size(); ++i) {
+        if (m_cancelRequested.loadAcquire()) {
+            qDebug() << "后台查询被中断";
+            m_lastPrefetchSuccessCount = successCount;
+            m_lastPrefetchTotalCount = mergedBlocks.size();
+            return false;
+        }
+        const TimeBlock& block = mergedBlocks[i];
+
+        if (block.isDateRange()) {
+            qDebug() << QString("执行查询 %1/%2: %3 %4 ~ %5 %6")
+                .arg(i + 1)
+                .arg(mergedBlocks.size())
+                .arg(block.startDate)
+                .arg(block.startTime.toString("HH:mm"))
+                .arg(block.endDate)
+                .arg(block.endTime.toString("HH:mm"));
+        }
+        else {
+            qDebug() << QString("执行查询 %1/%2: %3 ~ %4")
+                .arg(i + 1)
+                .arg(mergedBlocks.size())
+                .arg(block.startTime.toString("HH:mm"))
+                .arg(block.endTime.toString("HH:mm"));
+        }
+
+
+        emit taskProgress(i + 1, mergedBlocks.size());
+
+        bool success = executeSingleQuery(rtuList,
+            block.startTime,
+            block.endTime,
+            intervalSeconds);
+
+        if (success) {
+            successCount++;
+        }
+        else {
+            qWarning() << "查询失败";
+            failCount++;
+        }
+    }
+
+    // 记录统计信息
+    qDebug() << QString("预查询完成: 成功 %1/%2").arg(successCount).arg(mergedBlocks.size());
+    m_lastPrefetchSuccessCount = successCount;
+    m_lastPrefetchTotalCount = mergedBlocks.size();
+
+    // 只要有一次成功就返回 true
+    return successCount > 0;
 }

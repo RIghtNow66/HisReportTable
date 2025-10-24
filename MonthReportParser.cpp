@@ -108,18 +108,7 @@ bool MonthReportParser::findDateMarker()
 
                 cell->cellType = CellData::DateMarker;
                 cell->markerText = text;  // 保存原始标记
-
-                // 设置显示格式：2024年1月
-                QDate date = QDate::fromString(m_baseYearMonth + "-01", "yyyy-MM-dd");
-                if (date.isValid()) {
-                    cell->displayValue = QString("%1年%2月")
-                        .arg(date.year())
-                        .arg(date.month());
-                }
-                else {
-                    cell->displayValue = text;
-                }
-
+                cell->displayValue = text; 
                 cell->originalMarker = text;  // 兼容性
 
                 foundDate1 = true;
@@ -135,7 +124,7 @@ bool MonthReportParser::findDateMarker()
 
                 cell->cellType = CellData::TimeMarker;
                 cell->markerText = text;                // 保存原始标记
-                cell->displayValue = m_baseTime.left(5); // "08:30:00" → "08:30"
+                cell->displayValue = text;
                 cell->originalMarker = text;            // 兼容性
 
                 foundDate2 = true;
@@ -160,6 +149,69 @@ bool MonthReportParser::findDateMarker()
     return foundDate1 && foundDate2;
 }
 
+QVariant MonthReportParser::formatDisplayValueForMarker(const CellData* cell) const
+{
+    if (!cell || cell->markerText.isEmpty()) {
+        return cell ? cell->displayValue : QVariant();
+    }
+
+    // --- 处理 #Date1 (年月) ---
+    if (isDate1Marker(cell->markerText)) { // 使用 MonthReportParser 的 isDate1Marker
+        QString yearMonth = extractYearMonth(cell->markerText); // 调用 MonthReportParser 的
+        QDate date = QDate::fromString(yearMonth + "-01", "yyyy-MM-dd");
+        if (date.isValid()) {
+            return QString("%1年%2月").arg(date.year()).arg(date.month());
+        }
+        else {
+            qWarning() << "formatDisplayValueForMarker (Month): Invalid YearMonth:" << yearMonth << "from marker" << cell->markerText;
+            return cell->markerText;
+        }
+    }
+    // --- 处理 #Date2 (时间) ---
+    else if (isDate2Marker(cell->markerText)) { // 使用 MonthReportParser 的 isDate2Marker
+        QString timeStr_HHmmss = extractTimeOfDay(cell->markerText); // 调用 MonthReportParser 的
+        if (!timeStr_HHmmss.isEmpty()) {
+            QTime time = QTime::fromString(timeStr_HHmmss, "HH:mm:ss");
+            if (time.isValid()) return time.toString("HH:mm"); // 返回 HH:mm 格式
+            else {
+                qWarning() << "formatDisplayValueForMarker (Month): Invalid TimeOfDay:" << timeStr_HHmmss << "from marker" << cell->markerText;
+                return cell->markerText;
+            }
+        }
+        else {
+            qWarning() << "formatDisplayValueForMarker (Month): extractTimeOfDay failed for marker:" << cell->markerText;
+            return cell->markerText;
+        }
+    }
+    // --- 处理 #t# (日) ---
+    else if (isTimeMarker(cell->markerText)) { // 使用基类的 isTimeMarker
+        // 注意：这里不调用 extractTime，而是直接用 extractDay
+        int day = extractDay(cell->markerText); // 调用 MonthReportParser 的 extractDay
+        if (day > 0) {
+            // 验证日期是否有效
+            QDate date = QDate::fromString(m_baseYearMonth + QString("-%1").arg(day, 2, 10, QChar('0')), "yyyy-MM-dd");
+            if (date.isValid()) {
+                return QVariant(day); // 返回数字
+            }
+            else {
+                qWarning() << "formatDisplayValueForMarker (Month): Invalid day for month:" << day << "from marker" << cell->markerText;
+                return cell->markerText; // 返回原始标记表示无效
+            }
+        }
+        else {
+            qWarning() << "formatDisplayValueForMarker (Month): Invalid day extracted from:" << cell->markerText;
+            return cell->markerText; // 返回原始标记表示无效
+        }
+    }
+    // --- 处理 #d# (数据标记，格式化时不改变) ---
+    else if (isDataMarker(cell->markerText)) {
+        return cell->markerText;
+    }
+
+    // 如果以上都不是，返回原始标记
+    return cell->markerText;
+}
+
 void MonthReportParser::parseRow(int row)
 {
     int totalCols = m_model->columnCount();
@@ -180,15 +232,11 @@ void MonthReportParser::parseRow(int row)
             QDate date = QDate::fromString(
                 m_baseYearMonth + QString("-%1").arg(day, 2, 10, QChar('0')),
                 "yyyy-MM-dd");
-
             if (!date.isValid()) {
-                qWarning() << QString("行%1列%2: 无效日期 %3-%4")
-                    .arg(row).arg(col).arg(m_baseYearMonth).arg(day);
-
                 cell->cellType = CellData::TimeMarker;
-                cell->markerText = text;      // 保存原始标记
-                cell->displayValue = text;    // 显示原始文本
-                cell->originalMarker = text;  // 兼容性
+                cell->markerText = text;
+                cell->displayValue = text; // <-- 修改
+                cell->originalMarker = text;
                 continue;
             }
 
@@ -197,7 +245,7 @@ void MonthReportParser::parseRow(int row)
 
             cell->cellType = CellData::TimeMarker;
             cell->markerText = text;                    // 保存原始标记
-            cell->displayValue = QString::number(day);  // 显示日期数字
+            cell->displayValue = text; // <-- 修改
             cell->originalMarker = text;                // 兼容性
         }
         // 遇到 #d# 数据标记
@@ -374,7 +422,7 @@ bool MonthReportParser::isDate2Marker(const QString& text) const
     return text.startsWith("#Date2:", Qt::CaseInsensitive);
 }
 
-QString MonthReportParser::extractYearMonth(const QString& text)
+QString MonthReportParser::extractYearMonth(const QString& text) const
 {
     // #Date1:2024-01 → "2024-01"
     QString yearMonth = text.mid(7).trimmed();
@@ -396,7 +444,7 @@ QString MonthReportParser::extractYearMonth(const QString& text)
     return yearMonth;
 }
 
-QString MonthReportParser::extractTimeOfDay(const QString& text)
+QString MonthReportParser::extractTimeOfDay(const QString& text) const
 {
     // #Date2:08:30 → "08:30:00"
     QString timeStr = text.mid(7).trimmed();
@@ -425,7 +473,7 @@ QString MonthReportParser::extractTimeOfDay(const QString& text)
     return time.toString("HH:mm:ss");
 }
 
-int MonthReportParser::extractDay(const QString& text)
+int MonthReportParser::extractDay(const QString& text) const
 {
     // #t#1 → 1
     // #t#15 → 15

@@ -26,6 +26,9 @@ public:
 
     int getQueryIntervalSeconds() const override { return m_timeConfig.intervalSeconds; }
 
+
+    virtual QVariant formatDisplayValueForMarker(const CellData* cell) const { return QVariant(); }
+
 signals:
     // 查询进度信号（在后台线程中发射，主线程接收）
     void queryProgressUpdated(int current, int total);

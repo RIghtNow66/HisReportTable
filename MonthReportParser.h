@@ -29,6 +29,7 @@ public:
     // ===== 重写标记识别 =====
     QString extractTime(const QString& text) const override;
 
+    QVariant formatDisplayValueForMarker(const CellData* cell) const override;
 protected:
     // ===== 实现纯虚函数 =====
     bool findDateMarker() override;
@@ -51,9 +52,9 @@ private:
     // ===== 月报特有的标记识别 =====
     bool isDate1Marker(const QString& text) const;
     bool isDate2Marker(const QString& text) const;
-    QString extractYearMonth(const QString& text);
-    QString extractTimeOfDay(const QString& text);
-    int extractDay(const QString& text);
+    QString extractYearMonth(const QString& text) const;
+    QString extractTimeOfDay(const QString& text) const;
+    int extractDay(const QString& text) const;
 
     void collectActualDays();
     int getMinDay() const;

@@ -23,8 +23,12 @@ public:
     // ===== 日报特有接口 =====
     QString getBaseDate() const { return m_baseDate; }
 
-    QString extractTime(const QString& text) const override;
+    QVariant formatDisplayValueForMarker(const CellData* cell) const override;
 
+    QString extractTime(const QString& text) const override; // 确保声明存在
+
+    bool analyzeAndPrefetch() override;
+    QList<BaseReportParser::TimeBlock> identifyTimeBlocks() override;
 protected:
     // ===== 实现纯虚函数 =====
     bool findDateMarker() override;
@@ -42,7 +46,7 @@ protected:
 private:
     // ===== 日报特有的标记识别 =====
     bool isDateMarker(const QString& text) const;
-    QString extractDate(const QString& text);
+    QString extractDate(const QString& text) const;
 };
 
 #endif // DAYREPORTPARSER_H

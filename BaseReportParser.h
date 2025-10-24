@@ -117,8 +117,10 @@ public:
     bool findInCache(const QString& rtuId, int64_t timestamp, float& value);
 
     virtual QString extractTime(const QString& text) const = 0;
-
     virtual QString extractRtuId(const QString& text);
+
+    virtual QVariant formatDisplayValueForMarker(const CellData* cell) const = 0;
+
 
 signals:
     // ===== 同步解析信号 =====
@@ -196,13 +198,13 @@ protected:
      * @brief 智能分析并预查询
      * @return 是否成功
      */
-    virtual bool analyzeAndPrefetch();
+    virtual bool analyzeAndPrefetch()= 0;
 
     /**
      * @brief 识别连续的时间块
      * @return 时间块列表
      */
-    virtual QList<TimeBlock> identifyTimeBlocks();
+    virtual QList<TimeBlock> identifyTimeBlocks()=0;
 
     /**
      * @brief 判断两个时间块是否应该合并
