@@ -103,8 +103,8 @@ bool DayReportParser::findDateMarker()
                 // 设置显示格式
                 cell->displayValue = text;
 
-                qDebug() << QString("找到 #Date 标记: 行%1 列%2 → %3")
-                    .arg(row).arg(col).arg(m_baseDate);
+                QPoint pos(row, col);
+                m_scannedMarkers.insert(pos, text);
 
                 return true;
             }
@@ -135,6 +135,7 @@ void DayReportParser::parseRow(int row)
                 cell->cellType = CellData::TimeMarker; // 仍然标记为 TimeMarker
                 cell->markerText = text;
                 cell->displayValue = text; // 显示原始错误标记
+
                 continue; // 跳过 m_currentTime 设置
             }
             m_currentTime = timeStr; // 仍然需要设置 m_currentTime 用于后续 #d#
@@ -142,6 +143,10 @@ void DayReportParser::parseRow(int row)
             cell->cellType = CellData::TimeMarker;
             cell->markerText = text;    // 设置 markerText
             cell->displayValue = text; // <-- 修改：初始 displayValue 等于 markerText
+
+            QPoint pos(row, col);
+            m_scannedMarkers.insert(pos, text);  // 使用完整的标记文本作为值
+
             continue;
         }
         // 遇到 #d# 数据标记
@@ -179,35 +184,40 @@ void DayReportParser::parseRow(int row)
 QTime DayReportParser::getTaskTime(const QueryTask& task)
 {
     int row = task.row;
-    int totalCols = m_model->columnCount();
+    int col = task.col;
 
-    // 在同一行查找时间标记
-    for (int col = 0; col < totalCols; ++col) {
-        CellData* cell = m_model->getCell(row, col);
+    qDebug() << QString("【getTaskTime】查找任务时间: row=%1, col=%2").arg(row).arg(col);
+
+    // 从数据标记的列向左查找
+    for (int c = col - 1; c >= 0; --c) {
+        CellData* cell = m_model->getCell(row, c);
+        if (!cell) continue;
+
         if (cell && cell->cellType == CellData::TimeMarker) {
-            QString timeMarker = cell->markerText;
-            if (timeMarker.isEmpty()) {
-                // 兼容旧数据或意外情况
-                timeMarker = cell->displayValue.toString();
-            }
+            QString timeMarker = cell->markerText.isEmpty() ?
+                cell->displayValue.toString() :
+                cell->markerText;
+
+            qDebug() << QString("  → 找到时间标记：列%1, markerText='%2'")
+                .arg(c).arg(timeMarker);
+
             QString timeStr = extractTime(timeMarker);
             QTime time = QTime::fromString(timeStr, "HH:mm:ss");
-            if (!time.isValid()) {
-                // extractTime 应该总是返回 HH:mm:ss 或空
-                // 如果 timeStr 为空或格式仍不对，这里会捕获到
-                qWarning() << "getTaskTime: 解析时间失败：" << timeStr;
-                // time = QTime::fromString(timeStr, "HH:mm"); // 备用解析（extractTime 已处理）
-            }
+
+            qDebug() << QString("  → 提取时间：'%1', 解析结果：%2")
+                .arg(timeStr)
+                .arg(time.isValid() ? time.toString("HH:mm:ss") : "INVALID");
+
             return time;
         }
     }
 
+    qWarning() << QString("  → 未找到时间标记！");
     return QTime();
 }
 
 QVariant DayReportParser::formatDisplayValueForMarker(const CellData* cell) const
 {
-    qDebug() << "[DayParser::format] formatDisplayValueForMarker";
     if (!cell || cell->markerText.isEmpty()) {
         return cell ? cell->displayValue : QVariant(); // 无标记或cell为空，返回当前值
     }
@@ -392,29 +402,37 @@ QString DayReportParser::extractDate(const QString& text) const
 
 QString DayReportParser::findTimeForDataMarker(int row, int col)
 {
-    // ===== 同时检查 cellType 和文本内容 =====
+    qDebug() << QString("【查找时间】为数据标记 [%1,%2] 查找时间标记").arg(row).arg(col);
+
     for (int c = col - 1; c >= 0; --c) {
         CellData* cell = m_model->getCell(row, c);
         if (!cell) continue;
 
-        // 检查 cellType（已设置的单元格）
+        // 检查 cellType
         if (cell->cellType == CellData::TimeMarker) {
-            QString timeStr = cell->displayValue.toString();
+            // ===== 【修改】从 markerText 提取，而不是直接用 displayValue =====
+            QString markerText = cell->markerText.isEmpty() ?
+                cell->displayValue.toString() :
+                cell->markerText;
+
+            QString timeStr = extractTime(markerText);  // ← 统一使用 extractTime
+
+            qDebug() << QString("  → 通过 cellType 找到时间标记：列%1, markerText='%2', 提取时间='%3'")
+                .arg(c).arg(markerText).arg(timeStr);
             return timeStr;
         }
 
-        // 检查文本内容（新增但未解析的单元格）
+        // 检查文本内容
         QString text = cell->displayText().trimmed();
         if (isTimeMarker(text)) {
-            // 提取时间部分（#t#00:14 → 00:14）
             QString timeStr = extractTime(text);
-            qDebug() << QString("通过文本识别时间标记：行%1列%2，文本=%3，时间=%4")
-                .arg(row).arg(c).arg(text).arg(timeStr);
+            qDebug() << QString("  → 通过文本识别时间标记：列%1, text='%2', 提取时间='%3'")
+                .arg(c).arg(text).arg(timeStr);
             return timeStr;
         }
     }
 
-    qWarning() << QString("数据标记[%1,%2]左侧未找到时间标记").arg(row).arg(col);
+    qWarning() << QString("  → 未找到时间标记！");
     return QString();
 }
 
@@ -426,6 +444,30 @@ QList<BaseReportParser::TimeBlock> DayReportParser::identifyTimeBlocks()
     if (m_queryTasks.isEmpty()) {
         return blocks;
     }
+
+    // ===== 【添加】打印前10个任务的原始信息 =====
+    qDebug() << "【原始任务列表】前10个任务：";
+    for (int i = 0; i < qMin(10, m_queryTasks.size()); ++i) {
+        const auto& task = m_queryTasks[i];
+        qDebug() << QString("  Task[%1]: row=%2, col=%3, rtuId='%4'")
+            .arg(i)
+            .arg(task.row)
+            .arg(task.col)
+            .arg(task.cell ? task.cell->rtuId : "(null)");
+    }
+
+    // ===== 【添加】打印最后10个任务 =====
+    qDebug() << "【原始任务列表】最后10个任务：";
+    int start = qMax(0, m_queryTasks.size() - 10);
+    for (int i = start; i < m_queryTasks.size(); ++i) {
+        const auto& task = m_queryTasks[i];
+        qDebug() << QString("  Task[%1]: row=%2, col=%3, rtuId='%4'")
+            .arg(i)
+            .arg(task.row)
+            .arg(task.col)
+            .arg(task.cell ? task.cell->rtuId : "(null)");
+    }
+    // ==========================================
 
     // 按时间排序
     QList<QPair<QTime, int>> sortedTasks;
@@ -473,6 +515,7 @@ QList<BaseReportParser::TimeBlock> DayReportParser::identifyTimeBlocks()
     }
 
     blocks.append(currentBlock);
+
     return blocks;
 }
 

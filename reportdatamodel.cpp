@@ -2234,6 +2234,12 @@ bool ReportDataModel::fillDataFromCache(QProgressDialog* progress)
         int row = it.key().x();
         int col = it.key().y();
 
+        // ===== 【添加】只为新增行打印日志 =====
+        if (row >= 19) {  // 假设新增行从19开始
+            qDebug() << QString("【填充新增行】[%1,%2] RTU=%3").arg(row).arg(col).arg(cell->rtuId);
+        }
+        // ====================================
+
         // 根据报表类型构造时间戳
         QDateTime dateTime;
 
@@ -2243,6 +2249,15 @@ bool ReportDataModel::fillDataFromCache(QProgressDialog* progress)
         else if (m_reportType == MONTH_REPORT) {
             dateTime = constructDateTimeForMonthReport(row, col);
         }
+
+        // ===== 【修改】新增行打印时间戳 =====
+        if (row >= 19 && dateTime.isValid()) {
+            int64_t timestamp = dateTime.toMSecsSinceEpoch();
+            qDebug() << QString("  → 构造时间戳: %1 (%2)")
+                .arg(timestamp)
+                .arg(dateTime.toString("yyyy-MM-dd HH:mm:ss"));
+        }
+        // ===================================
 
         // 从缓存查找数据
         if (dateTime.isValid()) {
@@ -2254,12 +2269,24 @@ bool ReportDataModel::fillDataFromCache(QProgressDialog* progress)
                 cell->queryExecuted = true;
                 cell->querySuccess = true;
                 successCount++;
+
+                // ===== 【添加】新增行打印结果 =====
+                if (row >= 19) {
+                    qDebug() << QString("  → 缓存命中: value=%1").arg(value);
+                }
+                // ==================================
             }
             else {
                 cell->displayValue = "N/A";  // 更新显示值
                 cell->queryExecuted = true;
                 cell->querySuccess = false;
                 failCount++;
+
+                // ===== 【添加】新增行打印失败 =====
+                if (row >= 19) {
+                    qDebug() << QString("  → 缓存未命中");
+                }
+                // ==================================
             }
         }
         else {
@@ -2302,8 +2329,10 @@ QDateTime ReportDataModel::constructDateTimeForDayReport(int row, int col)
         // ===== 检查 markerText 并从中解析 =====
         if (timeCell && !timeCell->markerText.isEmpty() && timeCell->markerText.startsWith("#t#", Qt::CaseInsensitive)) {
             QString timeMarker = timeCell->markerText;
+
             // 调用 extractTime 从 markerText 解析时间字符串 "HH:mm:ss"
             QString timeStr = m_parser->extractTime(timeMarker);
+
             if (!timeStr.isEmpty()) {
                 time = QTime::fromString(timeStr, "HH:mm:ss");
                 if (time.isValid()) {
@@ -2323,11 +2352,10 @@ QDateTime ReportDataModel::constructDateTimeForDayReport(int row, int col)
     if (timeFound) {
         QString baseDateStr = dayParser->getBaseDate();
         QDate date = QDate::fromString(baseDateStr, "yyyy-MM-dd");
-        if (!date.isValid()) {
-            qWarning() << "Row" << row << ": Invalid baseDate found:" << baseDateStr;
-            return QDateTime();
-        }
-        return QDateTime(date, time);
+        QDateTime result = QDateTime(date, time);
+        int64_t timestamp = result.toMSecsSinceEpoch();
+
+        return result;
     }
     else {
         // 只有在循环结束后仍未找到时间才打印此警告

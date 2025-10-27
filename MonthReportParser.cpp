@@ -112,6 +112,9 @@ bool MonthReportParser::findDateMarker()
                 cell->markerText = text;  // 保存原始标记
                 cell->displayValue = text; 
 
+                QPoint pos(row, col);
+                m_scannedMarkers.insert(pos, text);
+
                 foundDate1 = true;
             }
             // 查找 #Date2:08:30
@@ -245,6 +248,9 @@ void MonthReportParser::parseRow(int row)
             cell->cellType = CellData::TimeMarker;
             cell->markerText = text;                    // 保存原始标记
             cell->displayValue = text; // <-- 修改
+
+            QPoint pos(row, col);
+            m_scannedMarkers.insert(pos, text);  // 使用完整的标记文本作为值
         }
         // 遇到 #d# 数据标记
         else if (isDataMarker(text)) {
@@ -721,24 +727,27 @@ bool MonthReportParser::analyzeAndPrefetch()
 
 QString MonthReportParser::findTimeForDataMarker(int row, int col)
 {
-    // ===== 同时检查 cellType 和文本内容 =====
     for (int c = col - 1; c >= 0; --c) {
         CellData* cell = m_model->getCell(row, c);
         if (!cell) continue;
 
-        // 方法1：检查 cellType（已设置的单元格）
+        // 方法1：检查 cellType
         if (cell->cellType == CellData::TimeMarker) {
-            int day = cell->displayValue.toInt();
+            // ===== 从 markerText 提取 =====
+            QString markerText = cell->markerText.isEmpty() ?
+                cell->displayValue.toString() :
+                cell->markerText;
+
+            int day = extractDay(markerText);  // ← 使用 extractDay 提取
             if (day > 0) {
                 return QString::number(day);
             }
         }
 
-        // 检查文本内容（新增但未解析的单元格）
+        // 方法2：检查文本内容
         QString text = cell->displayText().trimmed();
         if (isTimeMarker(text)) {
-            // 月报：#t#15 → 15（日期）
-            int day = extractDay(text);  // 调用提取日期的函数
+            int day = extractDay(text);
             if (day > 0) {
                 qDebug() << QString("通过文本识别日期标记：行%1列%2，文本=%3，日期=%4")
                     .arg(row).arg(c).arg(text).arg(day);

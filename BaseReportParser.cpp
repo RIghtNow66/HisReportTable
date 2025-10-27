@@ -139,12 +139,14 @@ bool BaseReportParser::findInCache(const QString& rtuId, int64_t timestamp, floa
     int64_t closestDiff = std::numeric_limits<int64_t>::max();
     bool found = false;
     float closestValue = 0.0f;
+    int64_t closestTimestamp = 0;
 
     for (const auto& pair : timeValues) {
         int64_t diff = qAbs(pair.first - timestamp);
         if (diff <= tolerance && diff < closestDiff) {
             closestDiff = diff;
             closestValue = pair.second;
+            closestTimestamp = pair.first;
             found = true;
         }
     }
@@ -185,6 +187,11 @@ bool BaseReportParser::executeSingleQuery(const QString& rtuList,
             .arg(intervalSeconds);
     }
 
+    // ===== 【添加日志】 =====
+    qDebug() << "【执行查询】" << query;
+    // =====================
+
+
     qDebug() << "  查询地址：" << query;
 
     auto startQueryTime = QDateTime::currentDateTime();  
@@ -192,17 +199,22 @@ bool BaseReportParser::executeSingleQuery(const QString& rtuList,
     try {
         auto dataMap = m_fetcher->fetchDataFromAddress(query.toStdString());
 
-        auto endQueryTime = QDateTime::currentDateTime();  
-        qDebug() << "  数据库查询耗时：" << startQueryTime.msecsTo(endQueryTime) << "ms";  
-        qDebug() << "  返回时间点数量：" << dataMap.size();
+        qDebug() << QString("【查询结果】返回 %1 个时间点").arg(dataMap.size());
+        if (!dataMap.empty()) {
+            // 只打印前3个时间戳
+            int count = 0;
+            for (auto it = dataMap.begin(); it != dataMap.end() && count < 3; ++it, ++count) {
+                int64_t ts = it->first;
+                QDateTime dt = QDateTime::fromMSecsSinceEpoch(ts);
+                qDebug() << QString("  时间戳[%1]: %2 -> %3")
+                    .arg(count).arg(ts).arg(dt.toString("yyyy-MM-dd HH:mm:ss"));
+            }
+        }
 
-        qDebug() << "  === 返回的所有时间戳 ===";
         for (auto it = dataMap.begin(); it != dataMap.end(); ++it) {
             int64_t ts = it->first;
             QDateTime dt = QDateTime::fromMSecsSinceEpoch(ts);
-            qDebug() << QString("    时间戳: %1 -> %2").arg(ts).arg(dt.toString("yyyy-MM-dd HH:mm:ss"));
         }
-        qDebug() << "  =========================";
 
         if (dataMap.empty()) {
             qWarning() << "  查询无数据";
@@ -345,37 +357,67 @@ BaseReportParser::RescanDiffInfo BaseReportParser::rescanDirtyCells(const QSet<Q
     int removedCount = 0;
     QSet<int> affectedRows;
 
+    // ===== 【添加】打印脏单元格位置 =====
+    qDebug() << "【增量扫描】脏单元格列表：";
+    for (const auto& pos : dirtyCells) {
+        int row = pos.x();  // ← 修改：QPoint 第一个参数是行
+        int col = pos.y();  // ← 修改：QPoint 第二个参数是列
+        const CellData* cell = m_model->getCell(row, col);  // ← 修改
+        QString cellInfo = cell ? cell->displayText() : "(null)";
+        qDebug() << QString("  [%1,%2] text='%3'").arg(row).arg(col).arg(cellInfo);
+    }
+    // ===================================
+
     // ===== 阶段1：检测时间标记变化，级联标记同行数据标记 =====
     QSet<QPoint> cascadedDirtyCells = dirtyCells;  // 扩展后的脏单元格集合
-
-
     for (const auto& pos : dirtyCells) {
-        int row = pos.y();
-        int col = pos.x();
+        int row = pos.x();
+        int col = pos.y();
 
         CellData* cell = m_model->getCell(row, col);
         if (!cell) continue;
 
         QString text = cell->displayText();
 
-        // 检测到时间标记或日期标记变化
+        // 检测到时间标记或日期标记
         if (isTimeMarker(text) || cell->cellType == CellData::TimeMarker ||
             cell->cellType == CellData::DateMarker) {
 
-            qDebug() << QString("检测到时间/日期标记变化：行%1列%2").arg(row).arg(col);
-            diffInfo.hasTimeMarkerChange = true;
+            QString oldMarker = m_scannedMarkers.value(pos);
 
-            // 级联标记同行所有数据标记为脏
-            int totalCols = m_model->columnCount();
-            for (int c = 0; c < totalCols; ++c) {
-                CellData* rowCell = m_model->getCell(row, c);
-                if (rowCell && rowCell->cellType == CellData::DataMarker) {
-                    QPoint dataPos(c, row);
-                    if (!cascadedDirtyCells.contains(dataPos)) {
-                        cascadedDirtyCells.insert(dataPos);
-                        qDebug() << QString("  级联标记数据标记：行%1列%2").arg(row).arg(c);
+            if (oldMarker.isEmpty()) {
+                // ===== 情况1：新增标记（包括复制粘贴） =====
+                qDebug() << QString("检测到新增时间/日期标记：行%1列%2, text='%3'")
+                    .arg(row).arg(col).arg(text);
+
+                // **不设置** hasTimeMarkerChange
+                m_scannedMarkers.insert(pos, text);
+
+            }
+            else if (oldMarker != text) {
+                // ===== 情况2：修改已存在的标记（真正的修改） =====
+                qDebug() << QString("检测到时间/日期标记被修改：行%1列%2, '%3' → '%4'")
+                    .arg(row).arg(col).arg(oldMarker).arg(text);
+
+                diffInfo.hasTimeMarkerChange = true;  // ← 触发全盘扫描
+                m_scannedMarkers.insert(pos, text);
+
+                // 级联标记同行所有数据标记
+                int totalCols = m_model->columnCount();
+                for (int c = 0; c < totalCols; ++c) {
+                    CellData* rowCell = m_model->getCell(row, c);
+                    if (rowCell && rowCell->cellType == CellData::DataMarker) {
+                        QPoint dataPos(row, c);
+                        if (!cascadedDirtyCells.contains(dataPos)) {
+                            cascadedDirtyCells.insert(dataPos);
+                            qDebug() << QString("  级联标记数据标记：行%1列%2").arg(row).arg(c);
+                        }
                     }
                 }
+            }
+            else {
+                // ===== 情况3：文本未变化（理论上不会进入脏单元格） =====
+                qDebug() << QString("时间标记未变化：行%1列%2").arg(row).arg(col);
             }
         }
     }
@@ -384,8 +426,8 @@ BaseReportParser::RescanDiffInfo BaseReportParser::rescanDirtyCells(const QSet<Q
 
     // ===== 【新增】阶段1.5：处理新增的时间标记，设置其 cellType =====
     for (const auto& pos : cascadedDirtyCells) {
-        int row = pos.y();
-        int col = pos.x();
+        int row = pos.x();  // ← 修改
+        int col = pos.y();  // ← 修改
 
         CellData* cell = m_model->getCell(row, col);
         if (!cell) continue;
@@ -394,22 +436,32 @@ BaseReportParser::RescanDiffInfo BaseReportParser::rescanDirtyCells(const QSet<Q
 
         // 识别时间标记但 cellType 未设置的单元格
         if (isTimeMarker(text) && cell->cellType != CellData::TimeMarker) {
-            qDebug() << QString("发现未设置类型的时间标记：行%1列%2，文本=%3")
+            qDebug() << QString("【增量扫描】发现未设置类型的时间标记：行%1列%2，文本=%3")
                 .arg(row).arg(col).arg(text);
 
+            qDebug() << QString("  → 设置前 cellType=%1, markerText='%2', displayValue='%3'")
+                .arg((int)cell->cellType)
+                .arg(cell->markerText)
+                .arg(cell->displayValue.toString());
+            
             // 立即设置 cellType
             cell->cellType = CellData::TimeMarker;
             cell->markerText = text;
-
+            
             // 提取并设置 displayValue
             QString timeValue = extractTime(text);
             if (!timeValue.isEmpty()) {
                 cell->displayValue = timeValue;
-                qDebug() << QString("  设置时间标记类型：cellType=TimeMarker, displayValue=%1")
-                    .arg(timeValue);
+                qDebug() << QString("  → 设置后 cellType=%1, markerText='%2', displayValue='%3'")
+                    .arg((int)cell->cellType)
+                    .arg(cell->markerText)
+                    .arg(cell->displayValue.toString());
+            }
+            else {
+                qDebug() << QString("  → extractTime 失败！返回空");
             }
         }
-
+        
         // 识别日期标记但 cellType 未设置的单元格（月报）
         if (cell->cellType != CellData::DateMarker) {
             // 检查是否是日期标记（子类可能需要重写）
@@ -424,8 +476,8 @@ BaseReportParser::RescanDiffInfo BaseReportParser::rescanDirtyCells(const QSet<Q
 
     // ===== 阶段2：处理所有脏单元格（包括级联的）=====
     for (const auto& pos : cascadedDirtyCells) {
-        int row = pos.y();
-        int col = pos.x();
+        int row = pos.x();  // ← 修改
+        int col = pos.y();  // ← 修改
 
         affectedRows.insert(row);
 
@@ -439,11 +491,17 @@ BaseReportParser::RescanDiffInfo BaseReportParser::rescanDirtyCells(const QSet<Q
             QString rtuId = extractRtuId(text);
             QString oldMarker = m_scannedMarkers.value(pos);
 
+            // ===== 【添加】详细日志 =====
+            qDebug() << QString("【增量扫描】处理数据标记：[%1,%2] text='%3', rtuId='%4', oldMarker='%5'")
+                .arg(row).arg(col).arg(text).arg(rtuId).arg(oldMarker);
+            // ===================================
+
             if (oldMarker.isEmpty()) {
                 // ===== 新增数据标记 =====
-
+                qDebug() << QString("  → 判定为新增数据标记");
                 // 查找时间上下文
                 QString timeStr = findTimeForDataMarker(row, col);
+                qDebug() << QString("  → findTimeForDataMarker 返回：'%1'").arg(timeStr);
                 if (timeStr.isEmpty()) {
                     qWarning() << QString("新增数据标记[%1,%2]时未找到时间上下文，跳过")
                         .arg(row).arg(col);
@@ -457,14 +515,23 @@ BaseReportParser::RescanDiffInfo BaseReportParser::rescanDirtyCells(const QSet<Q
                 task.cell = cell;
                 task.row = row;
                 task.col = col;
-                task.queryPath = findTimeForDataMarker(row, col);
-                m_queryTasks.append(task);
+                task.queryPath = timeStr;
 
-                modifiedCount++;
+                qDebug() << QString("  → 创建 QueryTask: queryPath='%1'").arg(task.queryPath);
+                m_queryTasks.append(task);
+                qDebug() << QString("  → m_queryTasks.size() = %1").arg(m_queryTasks.size());
+
+                newCount++;  // 改为 newCount++
+                diffInfo.newMarkerCount++;  // 同时更新 diffInfo
+                qDebug() << QString("  → newCount=%1, diffInfo.newMarkerCount=%2")
+                    .arg(newCount).arg(diffInfo.newMarkerCount);
+                // ===================================
+
                 qDebug() << QString("修改数据标记：行%1列%2，%3 → %4")
                     .arg(row).arg(col).arg(oldMarker).arg(rtuId);
             }
             else {
+                qDebug() << QString("  → 判定为已存在的数据标记（oldMarker不为空）");
                 // RTU号未变，但可能时间变了（级联导致的）
                 // 更新 QueryTask 的时间上下文
                 QString newTimeStr = findTimeForDataMarker(row, col);
@@ -541,6 +608,26 @@ BaseReportParser::RescanDiffInfo BaseReportParser::rescanDirtyCells(const QSet<Q
         .arg(newCount).arg(modifiedCount).arg(removedCount);
     qDebug() << QString("受影响的行数：%1").arg(affectedRows.size());
     qDebug() << QString("当前查询任务数：%1").arg(m_queryTasks.size());
+
+    // 【差分信息详情】
+    qDebug() << "【差分信息详情】";
+    qDebug() << QString("  newMarkerCount = %1").arg(diffInfo.newMarkerCount);
+    qDebug() << QString("  removedMarkers.size() = %1").arg(diffInfo.removedMarkers.size());
+    qDebug() << QString("  modifiedMarkers.size() = %1").arg(diffInfo.modifiedMarkers.size());
+    qDebug() << QString("  hasTimeMarkerChange = %1").arg(diffInfo.hasTimeMarkerChange);
+
+    // 打印前10个 QueryTask
+    qDebug() << "【QueryTask 列表（前10个）】";
+    for (int i = 0; i < qMin(10, m_queryTasks.size()); ++i) {
+        const auto& task = m_queryTasks[i];
+        qDebug() << QString("  Task[%1]: row=%2, col=%3, queryPath='%4', rtuId='%5'")
+            .arg(i)
+            .arg(task.row)
+            .arg(task.col)
+            .arg(task.queryPath)
+            .arg(task.cell ? task.cell->rtuId : "(null)");
+    }
+
     qDebug() << QString("差分信息：新增=%1，删除=%2，时间修改=%3")
         .arg(diffInfo.newMarkerCount)
         .arg(diffInfo.removedMarkers.size())
