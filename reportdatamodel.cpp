@@ -91,11 +91,6 @@ bool ReportDataModel::loadReportTemplate(const QString& fileName)
 
         m_parser = new DayReportParser(this, this);
 
-        if (!m_parser->scanAndParse()) {
-            clearAllCells();
-            return false;
-        }
-
         // **关键修改**：连接预查询完成信号，但不在这里设置编辑状态
         connect(m_parser, &BaseReportParser::asyncTaskCompleted,
             this, [this](bool success, const QString& message) {
@@ -107,11 +102,28 @@ bool ReportDataModel::loadReportTemplate(const QString& fileName)
                 setEditMode(true);  // 恢复可编辑
             }, Qt::QueuedConnection);
 
+
+        if (!m_parser->scanAndParse()) {
+            clearAllCells();
+            return false;
+        }
+
         // **关键修改**：立即设置为可编辑状态
         setEditMode(true);  // 导入后立即可编辑
         notifyDataChanged();
         return true;
     }
+
+    // **关键修改**：连接预查询完成信号
+    connect(m_parser, &BaseReportParser::asyncTaskCompleted,
+        this, [this](bool success, const QString& message) {
+            qDebug() << "月报预查询完成: " << success << message;
+            // **预查询完成后恢复编辑模式**
+            if (m_parser) {
+                m_parser->setEditState(BaseReportParser::CONFIG_EDIT);
+            }
+            setEditMode(true);  // 恢复可编辑
+        }, Qt::QueuedConnection);
 
     // ===== 识别月报模式 =====
     if (baseName.startsWith("##Month_", Qt::CaseInsensitive)) {
@@ -126,16 +138,6 @@ bool ReportDataModel::loadReportTemplate(const QString& fileName)
             return false;
         }
 
-        // **关键修改**：连接预查询完成信号
-        connect(m_parser, &BaseReportParser::asyncTaskCompleted,
-            this, [this](bool success, const QString& message) {
-                qDebug() << "月报预查询完成: " << success << message;
-                // **预查询完成后恢复编辑模式**
-                if (m_parser) {
-                    m_parser->setEditState(BaseReportParser::CONFIG_EDIT);
-                }
-                setEditMode(true);  // 恢复可编辑
-            }, Qt::QueuedConnection);
 
         // **关键修改**：立即设置为可编辑状态
         setEditMode(true);  // 导入后立即可编辑
@@ -311,6 +313,13 @@ void ReportDataModel::recalculateAllFormulas()
         if (calculatedCount == 0) {
             if (!m_dirtyFormulas.isEmpty()) {
                 qWarning() << QString("检测到 %1 个公式无法计算，可能存在循环依赖").arg(m_dirtyFormulas.size());
+                for (const QPoint& pos : m_dirtyFormulas) {
+                    CellData* cell = getCell(pos.x(), pos.y());
+                    if (cell) {
+                        cell->displayValue = QVariant("#循环引用!"); // 或者 "#ERROR!"
+                        cell->formulaCalculated = true; // 标记为已处理 (即使是错误)
+                    }
+                }
             }
             break;
         }
@@ -408,6 +417,17 @@ void ReportDataModel::restoreTemplateReport()
 void ReportDataModel::restoreUnifiedQuery()
 {
     qDebug() << "还原统一查询配置...";
+
+    if (m_parser && m_parser->isAsyncTaskRunning()) {
+        QMessageBox msgBox(QMessageBox::Warning, "操作被阻止",
+            "数据查询正在进行中，无法还原配置。\n\n"
+            "请等待查询完成或取消查询后再试。",
+            QMessageBox::NoButton, nullptr);
+        msgBox.setStandardButtons(QMessageBox::Ok);
+        msgBox.setButtonText(QMessageBox::Ok, "确定");
+        msgBox.exec();
+        return;
+    }
 
     // ===== 检查是否有用户添加的公式 =====
     bool hasUserFormulas = false;
@@ -651,6 +671,55 @@ bool ReportDataModel::refreshTemplateReport(QProgressDialog* progress)
         return false;
     }
 
+    bool dateMarkerChanged = false;
+    // 检查是否有 DateMarker 或 (对月报而言) Date1Marker 在脏单元格中
+    for (const QPoint& dirtyPos : m_dirtyCells) {
+        const CellData* cell = getCell(dirtyPos.x(), dirtyPos.y());
+        if (cell && cell->cellType == CellData::DateMarker) {
+            // 对于月报，Date1Marker 被识别为 DateMarker
+            dateMarkerChanged = true;
+            qWarning() << QString("检测到日期标记变化于 (%1, %2)，将强制重新扫描")
+                .arg(dirtyPos.x()).arg(dirtyPos.y());
+            break;
+        }
+    }
+
+    // 如果日期标记被修改，执行强制重新扫描和解析
+    if (dateMarkerChanged) {
+        qDebug() << "强制执行重新扫描和解析...";
+        m_parser->invalidateCache(); // 清空缓存，因为基准日期变了
+
+        // 断开旧的完成信号连接，避免重复触发或状态混乱
+        disconnect(m_parser, &BaseReportParser::asyncTaskCompleted, this, nullptr);
+
+        // **重要**：重新连接完成信号（与 loadReportTemplate 中逻辑保持一致）
+        connect(m_parser, &BaseReportParser::asyncTaskCompleted,
+            this, [this](bool success, const QString& message) {
+                qDebug() << "强制重新扫描后的预查询完成: " << success << message;
+                if (m_parser) {
+                    m_parser->setEditState(BaseReportParser::CONFIG_EDIT);
+                }
+                // 注意：这里不再需要 setEditMode(true)，因为刷新完成后会根据 fillSuccess 设置
+            }, Qt::QueuedConnection);
+
+
+        if (!m_parser->scanAndParse()) { // 重新扫描并解析，这会更新 m_baseDate 等，并启动新的预查询
+            qWarning() << "重新扫描失败";
+            QMessageBox::warning(nullptr, "扫描失败", "重新扫描模板标记失败，请检查模板。");
+            // 失败后，恢复编辑模式可能比较安全
+            setEditMode(true);
+            m_parser->setEditState(BaseReportParser::CONFIG_EDIT);
+            return false; // 扫描失败则无法继续
+        }
+        // 重新扫描成功后，认为所有单元格都干净了（因为 parser 内部会处理）
+        clearDirtyMarks(); // 清理脏标记
+        // 重置刷新状态，使其如同首次刷新一样
+        m_isFirstRefresh = true;
+        qDebug() << "强制重新扫描完成，将按照首次刷新逻辑继续...";
+        // 注意：这里不需要手动调用 refreshTemplateReport，因为当前函数会继续执行后续逻辑
+        // 但是需要确保后续逻辑按照首次刷新的路径走
+    }
+
     ChangeType changeType = detectChanges();
     bool hasDirtyCells = !m_dirtyCells.isEmpty();
     bool hasNewFormulas = (changeType == FORMULA_ONLY || changeType == MIXED_CHANGE);
@@ -697,6 +766,7 @@ bool ReportDataModel::refreshTemplateReport(QProgressDialog* progress)
             if (!m_parser->isCacheValid()) {
                 qDebug() << "缓存失效或需要新数据，准备查询";
                 m_parser->invalidateCache(); // 清缓存通常意味着需要重新查询
+                m_parser->startAsyncTask();
                 needQuery = true;
             }
             else {
@@ -2015,6 +2085,51 @@ ReportDataModel::UnifiedQueryChangeType ReportDataModel::detectUnifiedQueryChang
         // 还没查询过数据，肯定需要查询
         return UQ_NEED_REQUERY;
     }
+
+    UnifiedQueryParser* queryParser = dynamic_cast<UnifiedQueryParser*>(m_parser);
+    if (queryParser) {
+        const HistoryReportConfig& currentConfig = queryParser->getConfig();
+
+        // 重新扫描当前配置
+        HistoryReportConfig newConfig;
+        for (int row = 0; row < m_maxRow; ++row) {
+            QModelIndex nameIndex = index(row, 0);
+            QModelIndex rtuIndex = index(row, 1);
+
+            QString displayName = data(nameIndex, Qt::DisplayRole).toString().trimmed();
+            QString rtuId = data(rtuIndex, Qt::DisplayRole).toString().trimmed();
+
+            if (displayName.isEmpty() && rtuId.isEmpty()) {
+                break;
+            }
+
+            if (displayName.isEmpty() || rtuId.isEmpty()) {
+                continue;
+            }
+
+            ReportColumnConfig colConfig;
+            colConfig.displayName = displayName;
+            colConfig.rtuId = rtuId;
+            colConfig.sourceRow = row;
+            newConfig.columns.append(colConfig);
+        }
+
+        // 对比配置
+        if (newConfig.columns.size() != currentConfig.columns.size()) {
+            qDebug() << "[统一查询] 配置行数变化："
+                << currentConfig.columns.size() << "->" << newConfig.columns.size();
+            return UQ_NEED_REQUERY;
+        }
+
+        for (int i = 0; i < newConfig.columns.size(); ++i) {
+            if (newConfig.columns[i].displayName != currentConfig.columns[i].displayName ||
+                newConfig.columns[i].rtuId != currentConfig.columns[i].rtuId) {
+                qDebug() << "[统一查询] 配置内容变化：行" << i;
+                return UQ_NEED_REQUERY;
+            }
+        }
+    }
+
 
     // 检查是否有新增公式
     bool hasNewFormulas = false;
