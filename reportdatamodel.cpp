@@ -816,12 +816,63 @@ bool ReportDataModel::refreshTemplateReport(QProgressDialog* progress)
             }
         }
 
-        // ===== 执行查询（如果需要）=====
+        // ===== 【修改】统一改为异步查询 =====
         if (needQuery) {
-            qDebug() << "开始执行查询 (executeQueries)...";
-            querySuccess = m_parser->executeQueries(progress);
-            if (!querySuccess && progress && progress->wasCanceled()) return false;
-            if (!querySuccess) qWarning() << "查询失败/部分失败";
+            qDebug() << "启动异步查询任务...";
+
+            // 检查是否有待查询任务
+            if (m_parser->getPendingQueryCount() == 0) {
+                qDebug() << "没有待查询任务，跳过查询";
+            }
+            else {
+                // 启动异步任务
+                m_parser->startAsyncTask();
+
+                // 等待异步任务完成（带进度条）
+                if (progress) {
+                    progress->setLabelText("正在查询数据库...");
+                    progress->setRange(0, 0);  // 不确定进度模式
+                }
+
+                // 阻塞等待异步任务完成
+                QEventLoop loop;
+                bool taskCompleted = false;
+                QString taskMessage;
+
+                connect(m_parser, &BaseReportParser::asyncTaskCompleted,
+                        &loop, [&](bool success, const QString& message) {
+                    taskCompleted = true;
+                    querySuccess = success;
+                    taskMessage = message;
+                    loop.quit();
+                });
+
+                // 定期检查取消
+                QTimer cancelCheckTimer;
+                connect(&cancelCheckTimer, &QTimer::timeout, [&]() {
+                    if (progress && progress->wasCanceled()) {
+                        m_parser->requestCancel();
+                        loop.quit();
+                    }
+                });
+                cancelCheckTimer.start(100);  // 每100ms检查一次
+
+                loop.exec();  // 阻塞直到完成
+                cancelCheckTimer.stop();
+
+                // 检查是否取消
+                if (progress && progress->wasCanceled()) {
+                    qDebug() << "用户取消了查询";
+                    return false;
+                }
+
+                if (taskCompleted) {
+                    qDebug() << "异步查询完成：" << taskMessage;
+                    if (!querySuccess) {
+                        qWarning() << "查询失败/部分失败";
+                    }
+                }
+            }
         }
 
         // ===== 填充数据 =====

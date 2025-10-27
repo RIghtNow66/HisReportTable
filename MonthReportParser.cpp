@@ -300,19 +300,15 @@ QDateTime MonthReportParser::constructDateTime(const QString& date, const QStrin
 
 bool MonthReportParser::executeQueries(QProgressDialog* progress)
 {
+    // ===== 【修改】去掉同步查询，只负责从缓存填充 =====
+    // 注意：缓存已由异步任务 runAsyncTask() -> analyzeAndPrefetch() 填充
 
     if (m_queryTasks.isEmpty()) {
+        qDebug() << "没有待查询任务";
         return true;
     }
 
-    qDebug() << "========== 开始填充月报数据 ==========";
-
-    bool cacheReady = analyzeAndPrefetch();
-
-    if (!cacheReady) {
-        qWarning() << "查询失败";
-        // 不直接返回，继续用现有缓存填充
-    }
+    qDebug() << "========== 开始从缓存填充月报数据 ==========";
 
     if (progress) {
         progress->setRange(0, m_queryTasks.size());
@@ -345,7 +341,7 @@ bool MonthReportParser::executeQueries(QProgressDialog* progress)
         }
 
         if (day == 0) {
-            task.cell->value = "N/A";
+            task.cell->displayValue = "N/A";  // 使用 displayValue
             task.cell->queryExecuted = true;
             task.cell->querySuccess = false;
             failCount++;
@@ -359,7 +355,7 @@ bool MonthReportParser::executeQueries(QProgressDialog* progress)
         QDate date = QDate::fromString(fullDate, "yyyy-MM-dd");
         if (!date.isValid()) {
             // 无效日期（如2月30日）
-            task.cell->value = "N/A";
+            task.cell->displayValue = "N/A";  // 使用 displayValue
             task.cell->queryExecuted = true;
             task.cell->querySuccess = false;
             failCount++;
@@ -371,14 +367,15 @@ bool MonthReportParser::executeQueries(QProgressDialog* progress)
         int64_t timestamp = dateTime.toMSecsSinceEpoch();
 
         float value = 0.0f;
-        if (cacheReady && findInCache(task.cell->rtuId, timestamp, value)) {
-            task.cell->value = QString::number(value, 'f', 2);
+        // ===== 【修改】直接从缓存查找，不再检查 cacheReady =====
+        if (findInCache(task.cell->rtuId, timestamp, value)) {
+            task.cell->displayValue = QString::number(value, 'f', 2);  // 使用 displayValue
             task.cell->queryExecuted = true;
             task.cell->querySuccess = true;
             successCount++;
         }
         else {
-            task.cell->value = "N/A";
+            task.cell->displayValue = "N/A";  // 使用 displayValue
             task.cell->queryExecuted = true;
             task.cell->querySuccess = false;
             failCount++;
