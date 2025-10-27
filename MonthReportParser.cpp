@@ -722,9 +722,9 @@ bool MonthReportParser::analyzeAndPrefetch()
 
 QString MonthReportParser::findTimeForDataMarker(int row, int col)
 {
-    // 在同一行查找日期标记
-    int totalCols = m_model->columnCount();
-    for (int c = 0; c < totalCols; ++c) {
+    // ===== 改进：向左查找最近的日期标记 =====
+    // 策略：从当前列向左扫描，找到第一个 TimeMarker
+    for (int c = col - 1; c >= 0; --c) {
         CellData* cell = m_model->getCell(row, c);
         if (cell && cell->cellType == CellData::TimeMarker) {
             int day = cell->displayValue.toInt();  // 使用 displayValue
@@ -733,6 +733,9 @@ QString MonthReportParser::findTimeForDataMarker(int row, int col)
             }
         }
     }
+
+    // 没找到，记录警告
+    qWarning() << QString("数据标记[%1,%2]左侧未找到日期标记").arg(row).arg(col);
     return QString();
 }
 
