@@ -382,6 +382,46 @@ BaseReportParser::RescanDiffInfo BaseReportParser::rescanDirtyCells(const QSet<Q
 
     qDebug() << QString("级联后脏单元格数量：%1").arg(cascadedDirtyCells.size());
 
+    // ===== 【新增】阶段1.5：处理新增的时间标记，设置其 cellType =====
+    for (const auto& pos : cascadedDirtyCells) {
+        int row = pos.y();
+        int col = pos.x();
+
+        CellData* cell = m_model->getCell(row, col);
+        if (!cell) continue;
+
+        QString text = cell->displayText().trimmed();
+
+        // 识别时间标记但 cellType 未设置的单元格
+        if (isTimeMarker(text) && cell->cellType != CellData::TimeMarker) {
+            qDebug() << QString("发现未设置类型的时间标记：行%1列%2，文本=%3")
+                .arg(row).arg(col).arg(text);
+
+            // 立即设置 cellType
+            cell->cellType = CellData::TimeMarker;
+            cell->markerText = text;
+
+            // 提取并设置 displayValue
+            QString timeValue = extractTime(text);
+            if (!timeValue.isEmpty()) {
+                cell->displayValue = timeValue;
+                qDebug() << QString("  设置时间标记类型：cellType=TimeMarker, displayValue=%1")
+                    .arg(timeValue);
+            }
+        }
+
+        // 识别日期标记但 cellType 未设置的单元格（月报）
+        if (cell->cellType != CellData::DateMarker) {
+            // 检查是否是日期标记（子类可能需要重写）
+            if (text.startsWith("#Date", Qt::CaseInsensitive)) {
+                cell->cellType = CellData::DateMarker;
+                cell->markerText = text;
+                qDebug() << QString("  设置日期标记类型：行%1列%2").arg(row).arg(col);
+            }
+        }
+    }
+
+
     // ===== 阶段2：处理所有脏单元格（包括级联的）=====
     for (const auto& pos : cascadedDirtyCells) {
         int row = pos.y();
