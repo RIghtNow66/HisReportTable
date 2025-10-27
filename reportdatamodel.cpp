@@ -776,6 +776,7 @@ bool ReportDataModel::refreshTemplateReport(QProgressDialog* progress)
 
                 // 清空缓存并重新全盘扫描
                 m_parser->invalidateCache();
+                m_parser->clearQueryTasks();  // 清空错误任务
                 scanNeeded = true;
                 needQuery = true;
             }

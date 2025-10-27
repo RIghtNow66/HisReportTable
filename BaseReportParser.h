@@ -144,6 +144,8 @@ public:
 
     virtual QVariant formatDisplayValueForMarker(const CellData* cell) const = 0;
 
+    void clearQueryTasks() { m_queryTasks.clear(); }
+
 
 signals:
     // ===== 同步解析信号 =====

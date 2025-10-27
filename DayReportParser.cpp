@@ -21,6 +21,8 @@ bool DayReportParser::scanAndParse()
 
     // 清空旧数据
     m_queryTasks.clear();
+    m_dataMarkerCells.clear();
+    m_scannedMarkers.clear();
     m_dateFound = false;
     m_baseDate.clear();
     m_currentTime.clear();
@@ -390,17 +392,28 @@ QString DayReportParser::extractDate(const QString& text) const
 
 QString DayReportParser::findTimeForDataMarker(int row, int col)
 {
-    // ===== 向左查找最近的时间标记 =====
-       // 策略：从当前列向左扫描，找到第一个 TimeMarker
+    // ===== 同时检查 cellType 和文本内容 =====
     for (int c = col - 1; c >= 0; --c) {
         CellData* cell = m_model->getCell(row, c);
-        if (cell && cell->cellType == CellData::TimeMarker) {
+        if (!cell) continue;
+
+        // 检查 cellType（已设置的单元格）
+        if (cell->cellType == CellData::TimeMarker) {
             QString timeStr = cell->displayValue.toString();
+            return timeStr;
+        }
+
+        // 检查文本内容（新增但未解析的单元格）
+        QString text = cell->displayText().trimmed();
+        if (isTimeMarker(text)) {
+            // 提取时间部分（#t#00:14 → 00:14）
+            QString timeStr = extractTime(text);
+            qDebug() << QString("通过文本识别时间标记：行%1列%2，文本=%3，时间=%4")
+                .arg(row).arg(c).arg(text).arg(timeStr);
             return timeStr;
         }
     }
 
-    // 没找到，记录警告
     qWarning() << QString("数据标记[%1,%2]左侧未找到时间标记").arg(row).arg(col);
     return QString();
 }
