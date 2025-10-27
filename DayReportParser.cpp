@@ -302,17 +302,11 @@ bool DayReportParser::executeQueries(QProgressDialog* progress)
 {
 
     if (m_queryTasks.isEmpty()) {
+        qDebug() << "没有待查询任务";
         return true;
     }
 
-    bool cacheReady = analyzeAndPrefetch();
-
-    if (!cacheReady) {
-        qWarning() << "查询失败";
-        // 不直接返回，继续用现有缓存填充
-    }
-
-    qDebug() << "========== 开始填充数据 ==========";
+    qDebug() << "========== 开始从缓存填充数据 ==========";
 
 
     if (progress) {
@@ -335,7 +329,7 @@ bool DayReportParser::executeQueries(QProgressDialog* progress)
 
         QTime time = getTaskTime(task);
         if (!time.isValid()) {
-            task.cell->value = "N/A";
+            task.cell->displayValue = "N/A";
             task.cell->queryExecuted = true;
             task.cell->querySuccess = false;
             failCount++;
@@ -349,14 +343,15 @@ bool DayReportParser::executeQueries(QProgressDialog* progress)
         int64_t timestamp = dateTime.toMSecsSinceEpoch();
 
         float value = 0.0f;
-        if (cacheReady && findInCache(task.cell->rtuId, timestamp, value)) {
-            task.cell->value = QString::number(value, 'f', 2);
+        // ===== 【修改】直接从缓存查找，不再检查 cacheReady =====
+        if (findInCache(task.cell->rtuId, timestamp, value)) {
+            task.cell->displayValue = QString::number(value, 'f', 2);
             task.cell->queryExecuted = true;
             task.cell->querySuccess = true;
             successCount++;
         }
         else {
-            task.cell->value = "N/A";
+            task.cell->displayValue = "N/A";
             task.cell->queryExecuted = true;
             task.cell->querySuccess = false;
             failCount++;
@@ -395,14 +390,18 @@ QString DayReportParser::extractDate(const QString& text) const
 
 QString DayReportParser::findTimeForDataMarker(int row, int col)
 {
-    // 在同一行查找时间标记
-    int totalCols = m_model->columnCount();
-    for (int c = 0; c < totalCols; ++c) {
+    // ===== 向左查找最近的时间标记 =====
+       // 策略：从当前列向左扫描，找到第一个 TimeMarker
+    for (int c = col - 1; c >= 0; --c) {
         CellData* cell = m_model->getCell(row, c);
         if (cell && cell->cellType == CellData::TimeMarker) {
-            return cell->displayValue.toString();
+            QString timeStr = cell->displayValue.toString();
+            return timeStr;
         }
     }
+
+    // 没找到，记录警告
+    qWarning() << QString("数据标记[%1,%2]左侧未找到时间标记").arg(row).arg(col);
     return QString();
 }
 

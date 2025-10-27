@@ -80,6 +80,26 @@ public:
         }
     };
 
+    // ===== 增量扫描差分信息结构 =====
+    struct RescanDiffInfo {
+        struct RemovedMarker {
+            QString rtuId;
+            int64_t timestamp;  // 旧的时间戳
+        };
+
+        struct ModifiedMarker {
+            QString rtuId;
+            int64_t oldTimestamp;  // 旧时间戳
+            int64_t newTimestamp;  // 新时间戳
+        };
+
+        QList<RemovedMarker> removedMarkers;   // 被删除的标记
+        QList<ModifiedMarker> modifiedMarkers; // 时间改变的标记
+        int newMarkerCount;                    // 新增标记数量
+        bool hasTimeMarkerChange;              // 是否有时间标记变化
+
+        RescanDiffInfo() : newMarkerCount(0), hasTimeMarkerChange(false) {}
+    };
 public:
     explicit BaseReportParser(ReportDataModel* model, QObject* parent = nullptr);
     virtual ~BaseReportParser();
@@ -112,9 +132,12 @@ public:
     int getLastPrefetchSuccessCount() const { return m_lastPrefetchSuccessCount; }
     int getLastPrefetchTotalCount() const { return m_lastPrefetchTotalCount; }
 
-    void rescanDirtyCells(const QSet<QPoint>& dirtyCells);
+    RescanDiffInfo rescanDirtyCells(const QSet<QPoint>& dirtyCells);  // 返回差分信息
 
     bool findInCache(const QString& rtuId, int64_t timestamp, float& value);
+
+    // ===== 缓存管理 =====
+    void cleanupCacheByDiff(const RescanDiffInfo& diffInfo);  // 根据差分清理缓存
 
     virtual QString extractTime(const QString& text) const = 0;
     virtual QString extractRtuId(const QString& text);
@@ -195,6 +218,8 @@ protected:
     virtual bool runAsyncTask() = 0;
 
     // ===== 通用工具函数（子类可直接使用） =====
+
+    virtual int64_t calculateTimestampForMarker(int row, int col);
 
     /**
      * @brief 执行单次查询

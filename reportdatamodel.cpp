@@ -14,6 +14,7 @@
 #include <QMessageBox>
 #include <QRegularExpression>
 #include <QPushButton>
+#include <QTimer>
 
 #include "reportdatamodel.h"
 #include "formulaengine.h"
@@ -760,20 +761,43 @@ bool ReportDataModel::refreshTemplateReport(QProgressDialog* progress)
         bool needQuery = false;
         bool scanNeeded = false;
 
+        // ===== 【增强】差分信息和缓存清理 =====
+        BaseReportParser::RescanDiffInfo diffInfo;
+
         if (hasDirtyCells) {
-            qDebug() << QString("检测到 %1 个脏单元格，进行增量扫描/查询").arg(m_dirtyCells.size());
-            m_parser->rescanDirtyCells(m_dirtyCells);
-            if (!m_parser->isCacheValid()) {
-                qDebug() << "缓存失效或需要新数据，准备查询";
-                m_parser->invalidateCache(); // 清缓存通常意味着需要重新查询
-                m_parser->startAsyncTask();
+            qDebug() << QString("检测到 %1 个脏单元格，进行增量扫描").arg(m_dirtyCells.size());
+
+            // 执行增量扫描，获取差分信息
+            diffInfo = m_parser->rescanDirtyCells(m_dirtyCells);
+
+            // ===== 【关键判断】是否需要全盘扫描 =====
+            if (diffInfo.hasTimeMarkerChange) {
+                qDebug() << "检测到时间标记变化，切换为全盘扫描";
+
+                // 清空缓存并重新全盘扫描
+                m_parser->invalidateCache();
+                scanNeeded = true;
                 needQuery = true;
             }
             else {
-                // 即使缓存有效，如果 rescan 发现了新任务，可能也需要查询
-                // 这里简化处理：认为有脏单元格就需要尝试查询（executeQueries内部会优化）
-                needQuery = true;
-                qDebug() << "缓存可能有效，但仍尝试执行查询（内部会优化）";
+                // 只是数据标记变化，使用增量方式
+
+                // 清理受影响的缓存项
+                m_parser->cleanupCacheByDiff(diffInfo);
+
+                // 判断是否需要查询
+                if (diffInfo.newMarkerCount > 0 || !diffInfo.modifiedMarkers.isEmpty()) {
+                    qDebug() << "有新增或修改的标记，需要查询";
+                    needQuery = true;
+                }
+                else if (!diffInfo.removedMarkers.isEmpty()) {
+                    qDebug() << "只有删除操作，无需查询";
+                    needQuery = false;
+                }
+                else {
+                    qDebug() << "无实质性变化，无需查询";
+                    needQuery = false;
+                }
             }
         }
         else if (!m_isFirstRefresh && (changeType == BINDING_ONLY || changeType == MIXED_CHANGE)) {
@@ -783,23 +807,76 @@ bool ReportDataModel::refreshTemplateReport(QProgressDialog* progress)
             needQuery = true;
         }
 
+        // ===== 执行全盘扫描（如果需要）=====
         if (scanNeeded) {
-            qDebug() << "执行重新扫描...";
+            qDebug() << "执行重新全盘扫描...";
             if (!m_parser->scanAndParse()) {
                 qWarning() << "重新扫描失败";
                 QMessageBox::warning(nullptr, "扫描失败", "重新扫描模板标记失败，请检查模板。");
-                return false; // 扫描失败则无法继续
+                return false;
             }
         }
 
+        // ===== 统一改为异步查询 =====
         if (needQuery) {
-            qDebug() << "开始执行查询 (executeQueries)...";
-            querySuccess = m_parser->executeQueries(progress);
-            if (!querySuccess && progress && progress->wasCanceled()) return false;
-            if (!querySuccess) qWarning() << "查询失败/部分失败";
-            // 即使查询失败，也继续尝试填充
+            qDebug() << "启动异步查询任务...";
+
+            // 检查是否有待查询任务
+            if (m_parser->getPendingQueryCount() == 0) {
+                qDebug() << "没有待查询任务，跳过查询";
+            }
+            else {
+                // 启动异步任务
+                m_parser->startAsyncTask();
+
+                // 等待异步任务完成（带进度条）
+                if (progress) {
+                    progress->setLabelText("正在查询数据库...");
+                    progress->setRange(0, 0);  // 不确定进度模式
+                }
+
+                // 阻塞等待异步任务完成
+                QEventLoop loop;
+                bool taskCompleted = false;
+                QString taskMessage;
+
+                connect(m_parser, &BaseReportParser::asyncTaskCompleted,
+                    &loop, [&](bool success, const QString& message) {
+                        taskCompleted = true;
+                        querySuccess = success;
+                        taskMessage = message;
+                        loop.quit();
+                    });
+
+                // 定期检查取消
+                QTimer cancelCheckTimer;
+                connect(&cancelCheckTimer, &QTimer::timeout, [&]() {
+                    if (progress && progress->wasCanceled()) {
+                        m_parser->requestCancel();
+                        loop.quit();
+                    }
+                    });
+                cancelCheckTimer.start(100);  // 每100ms检查一次
+
+                loop.exec();  // 阻塞直到完成
+                cancelCheckTimer.stop();
+
+                // 检查是否取消
+                if (progress && progress->wasCanceled()) {
+                    qDebug() << "用户取消了查询";
+                    return false;
+                }
+
+                if (taskCompleted) {
+                    qDebug() << "异步查询完成：" << taskMessage;
+                    if (!querySuccess) {
+                        qWarning() << "查询失败/部分失败";
+                    }
+                }
+            }
         }
 
+        // ===== 填充数据 =====
         qDebug() << "开始从缓存填充数据 (fillDataFromCache)...";
         fillSuccess = fillDataFromCache(progress);
         if (progress && progress->wasCanceled()) return false;
@@ -848,46 +925,6 @@ bool ReportDataModel::refreshTemplateReport(QProgressDialog* progress)
     notifyDataChanged(); // 通知UI更新最终状态
     return fillSuccess;
 }
-
-//QString ReportDataModel::extractRtuId(const QString& text)
-//{
-//    if (text.startsWith("#d#", Qt::CaseInsensitive)) {
-//        return text.mid(3).trimmed();
-//    }
-//    return QString();
-//}
-//
-//QString ReportDataModel::extractTime(const QString& text)
-//{
-//    // 默认实现：#t#0:00 → "00:00:00"
-//    if (!text.startsWith("#t#", Qt::CaseInsensitive) || text.length() <= 3) {
-//        qWarning() << "extractTime: Invalid marker text:" << text;
-//        return QString(); // 返回空表示失败
-//    }
-//    // 提取时间：#t#0:00 → "00:00:00"
-//    QString timeStr = text.mid(3).trimmed();
-//    QStringList parts = timeStr.split(":");
-//
-//    if (parts.size() == 2) {
-//        timeStr += ":00";
-//    }
-//    else if (parts.size() != 3) {
-//        qWarning() << "时间格式错误:" << text;
-//        return "00:00:00";
-//    }
-//
-//    // 尝试多种格式解析
-//    QTime time = QTime::fromString(timeStr, "H:mm:ss");
-//    if (!time.isValid()) {
-//        time = QTime::fromString(timeStr, "HH:mm:ss");
-//        if (!time.isValid()) {
-//            qWarning() << "extractTime: Time parsing failed:" << timeStr << "from marker" << text;
-//            return QString(); // 返回空表示失败
-//        }
-//    }
-//
-//    return time.toString("HH:mm:ss"); // 总是返回标准格式
-//}
 
 void ReportDataModel::markRowDataMarkersDirty(int row)
 {
