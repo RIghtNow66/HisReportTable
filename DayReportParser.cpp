@@ -188,6 +188,21 @@ QTime DayReportParser::getTaskTime(const QueryTask& task)
 
     qDebug() << QString("【getTaskTime】查找任务时间: row=%1, col=%2").arg(row).arg(col);
 
+    // ===== 【新增】打印该行所有单元格的类型 =====
+    qDebug() << QString("  → 扫描第%1行的所有单元格:").arg(row);
+    for (int c = 0; c < m_model->columnCount(); ++c) {
+        CellData* cell = m_model->getCell(row, c);
+        if (cell && !cell->displayText().isEmpty()) {
+            qDebug() << QString("    列%1: cellType=%2, markerText='%3', text='%4'")
+                .arg(c)
+                .arg((int)cell->cellType)
+                .arg(cell->markerText)
+                .arg(cell->displayText());
+        }
+    }
+    // ==========================================
+
+
     // 从数据标记的列向左查找
     for (int c = col - 1; c >= 0; --c) {
         CellData* cell = m_model->getCell(row, c);
@@ -198,15 +213,8 @@ QTime DayReportParser::getTaskTime(const QueryTask& task)
                 cell->displayValue.toString() :
                 cell->markerText;
 
-            qDebug() << QString("  → 找到时间标记：列%1, markerText='%2'")
-                .arg(c).arg(timeMarker);
-
             QString timeStr = extractTime(timeMarker);
             QTime time = QTime::fromString(timeStr, "HH:mm:ss");
-
-            qDebug() << QString("  → 提取时间：'%1', 解析结果：%2")
-                .arg(timeStr)
-                .arg(time.isValid() ? time.toString("HH:mm:ss") : "INVALID");
 
             return time;
         }
@@ -438,36 +446,11 @@ QString DayReportParser::findTimeForDataMarker(int row, int col)
 
 QList<BaseReportParser::TimeBlock> DayReportParser::identifyTimeBlocks()
 {
-    qDebug() << "【日报】identifyTimeBlocks() 被调用";
     QList<TimeBlock> blocks;
 
     if (m_queryTasks.isEmpty()) {
         return blocks;
     }
-
-    // ===== 【添加】打印前10个任务的原始信息 =====
-    qDebug() << "【原始任务列表】前10个任务：";
-    for (int i = 0; i < qMin(10, m_queryTasks.size()); ++i) {
-        const auto& task = m_queryTasks[i];
-        qDebug() << QString("  Task[%1]: row=%2, col=%3, rtuId='%4'")
-            .arg(i)
-            .arg(task.row)
-            .arg(task.col)
-            .arg(task.cell ? task.cell->rtuId : "(null)");
-    }
-
-    // ===== 【添加】打印最后10个任务 =====
-    qDebug() << "【原始任务列表】最后10个任务：";
-    int start = qMax(0, m_queryTasks.size() - 10);
-    for (int i = start; i < m_queryTasks.size(); ++i) {
-        const auto& task = m_queryTasks[i];
-        qDebug() << QString("  Task[%1]: row=%2, col=%3, rtuId='%4'")
-            .arg(i)
-            .arg(task.row)
-            .arg(task.col)
-            .arg(task.cell ? task.cell->rtuId : "(null)");
-    }
-    // ==========================================
 
     // 按时间排序
     QList<QPair<QTime, int>> sortedTasks;

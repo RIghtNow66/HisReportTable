@@ -187,27 +187,17 @@ bool BaseReportParser::executeSingleQuery(const QString& rtuList,
             .arg(intervalSeconds);
     }
 
-    // ===== 【添加日志】 =====
-    qDebug() << "【执行查询】" << query;
-    // =====================
-
-
-    qDebug() << "  查询地址：" << query;
-
     auto startQueryTime = QDateTime::currentDateTime();  
 
     try {
         auto dataMap = m_fetcher->fetchDataFromAddress(query.toStdString());
 
-        qDebug() << QString("【查询结果】返回 %1 个时间点").arg(dataMap.size());
         if (!dataMap.empty()) {
             // 只打印前3个时间戳
             int count = 0;
             for (auto it = dataMap.begin(); it != dataMap.end() && count < 3; ++it, ++count) {
                 int64_t ts = it->first;
                 QDateTime dt = QDateTime::fromMSecsSinceEpoch(ts);
-                qDebug() << QString("  时间戳[%1]: %2 -> %3")
-                    .arg(count).arg(ts).arg(dt.toString("yyyy-MM-dd HH:mm:ss"));
             }
         }
 
@@ -472,6 +462,23 @@ BaseReportParser::RescanDiffInfo BaseReportParser::rescanDirtyCells(const QSet<Q
             }
         }
     }
+
+    qDebug() << "========== 验证新增行的cellType设置 ==========";
+    for (const auto& pos : cascadedDirtyCells) {
+        int row = pos.x();
+        int col = pos.y();
+
+        CellData* cell = m_model->getCell(row, col);
+        if (cell) {
+            qDebug() << QString("【验证】[%1,%2] cellType=%3, markerText='%4', displayText='%5'")
+                .arg(row)
+                .arg(col)
+                .arg((int)cell->cellType)
+                .arg(cell->markerText)
+                .arg(cell->displayText());
+        }
+    }
+    qDebug() << "================================================";
 
 
     // ===== 阶段2：处理所有脏单元格（包括级联的）=====

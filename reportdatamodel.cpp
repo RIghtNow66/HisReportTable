@@ -2235,9 +2235,11 @@ bool ReportDataModel::fillDataFromCache(QProgressDialog* progress)
         int col = it.key().y();
 
         // ===== 【添加】只为新增行打印日志 =====
-        if (row >= 19) {  // 假设新增行从19开始
-            qDebug() << QString("【填充新增行】[%1,%2] RTU=%3").arg(row).arg(col).arg(cell->rtuId);
-        }
+        qDebug() << QString("【填充数据】[%1,%2] RTU=%3, cellType=%4")
+            .arg(row)
+            .arg(col)
+            .arg(cell->rtuId)
+            .arg((int)cell->cellType);
         // ====================================
 
         // 根据报表类型构造时间戳
@@ -2321,16 +2323,19 @@ QDateTime ReportDataModel::constructDateTimeForDayReport(int row, int col)
         return QDateTime();
     }
 
-    // 在同一行查找时间标记
+    // 【修复】在同一行向左查找时间标记 (从当前数据单元格的列开始向左)
+    // 这保证了我们找到的是逻辑上属于这个数据块的那个#t#标记
     QTime time;
     bool timeFound = false;
-    for (int c = 0; c < m_maxCol; ++c) {
+    for (int c = col; c >= 0; --c) { // <--- 关键修改：从 col 开始，向左 (c--) 搜索
         const CellData* timeCell = getCell(row, c);
+
         // ===== 检查 markerText 并从中解析 =====
         if (timeCell && !timeCell->markerText.isEmpty() && timeCell->markerText.startsWith("#t#", Qt::CaseInsensitive)) {
             QString timeMarker = timeCell->markerText;
 
             // 调用 extractTime 从 markerText 解析时间字符串 "HH:mm:ss"
+            // (我们复用 parser 里的解析逻辑，保持一致)
             QString timeStr = m_parser->extractTime(timeMarker);
 
             if (!timeStr.isEmpty()) {
@@ -2345,7 +2350,8 @@ QDateTime ReportDataModel::constructDateTimeForDayReport(int row, int col)
             else {
                 qWarning() << "Row" << row << ": extractTime failed for marker:" << timeMarker;
             }
-            break; // 找到了标记单元格就跳出内层循环
+
+            break; // <--- 关键修改：找到第一个（即最近的）#t#标记后立即停止
         }
     }
 
@@ -2353,13 +2359,13 @@ QDateTime ReportDataModel::constructDateTimeForDayReport(int row, int col)
         QString baseDateStr = dayParser->getBaseDate();
         QDate date = QDate::fromString(baseDateStr, "yyyy-MM-dd");
         QDateTime result = QDateTime(date, time);
-        int64_t timestamp = result.toMSecsSinceEpoch();
 
         return result;
     }
     else {
         // 只有在循环结束后仍未找到时间才打印此警告
-        qWarning() << "Row" << row << ": Could not find valid TimeMarker cell or parse time.";
+        // 【增强调试】加入列信息
+        qWarning() << "Row" << row << " Col" << col << ": Could not find valid TimeMarker cell or parse time.";
     }
     return QDateTime();
 }
@@ -2373,18 +2379,22 @@ QDateTime ReportDataModel::constructDateTimeForMonthReport(int row, int col)
         return QDateTime();
     }
 
-    // 在同一行查找日期标记 (#t# 代表日)
+    // 【修复】在同一行查找日期标记 (#t# 代表日)
+    // 统一为“从当前数据单元格的列开始向左查找”
     int day = 0;
     bool dayFound = false;
-    for (int c = 0; c < m_maxCol; ++c) {
+    for (int c = col; c >= 0; --c) { // <--- 关键修改：从 col 开始，向左 (c--) 搜索
         const CellData* dayCell = getCell(row, c);
-        // ===== 修改：检查 markerText 并从中解析 =====
+
+        // ===== 检查 markerText 并从中解析 =====
         if (dayCell && !dayCell->markerText.isEmpty() && dayCell->markerText.startsWith("#t#", Qt::CaseInsensitive)) {
             QString dayMarker = dayCell->markerText;
+
             // 直接从 markerText 中提取数字部分
             QString dayStr = dayMarker.mid(3).trimmed();
             bool ok = false;
             day = dayStr.toInt(&ok);
+
             // 增加对 day 范围的检查
             if (!ok || day < 1 || day > 31) {
                 qWarning() << "Row" << row << ": Failed to parse valid day number from markerText:" << dayMarker;
@@ -2393,7 +2403,8 @@ QDateTime ReportDataModel::constructDateTimeForMonthReport(int row, int col)
             else {
                 dayFound = true;
             }
-            break; // 找到了标记单元格就跳出内层循环
+
+            break; // <--- 关键修改：找到了标记单元格就跳出内层循环
         }
         // ===========================================
     }
@@ -2415,12 +2426,12 @@ QDateTime ReportDataModel::constructDateTimeForMonthReport(int row, int col)
     }
     else {
         // 只有在循环结束后仍未找到日期才打印此警告
-        qWarning() << "Row" << row << ": Could not find valid TimeMarker cell or parse day number.";
+        // 【增强调试】加入列信息
+        qWarning() << "Row" << row << " Col" << col << ": Could not find valid TimeMarker cell or parse day number.";
     }
 
     return QDateTime();
 }
-
 
 void ReportDataModel::markCellDirty(int row, int col)
 {

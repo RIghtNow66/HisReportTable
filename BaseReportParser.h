@@ -264,10 +264,10 @@ protected:
     */
     virtual bool getDateRange(QString& startDate, QString& endDate);
 
-
     // ===== 标记识别（子类可选择性重写） =====
     virtual bool isTimeMarker(const QString& text) const;
     virtual bool isDataMarker(const QString& text) const;
+
 
 protected slots:
     void onAsyncTaskFinished();
