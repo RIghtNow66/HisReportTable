@@ -822,6 +822,8 @@ void MainWindow::onUnifiedQueryCanceled()
 
 void MainWindow::onUnifiedQueryCompleted(bool success, QString message)
 {
+    m_toolBar->setEnabled(true);
+
     // 关闭进度框
     if (m_unifiedQueryProgress) {
         m_unifiedQueryProgress->close();
@@ -898,42 +900,41 @@ void MainWindow::onRefreshData()
         // ===== 检测变化类型 =====
         ReportDataModel::UnifiedQueryChangeType changeType = m_dataModel->detectUnifiedQueryChanges();
 
-        // 如果只有公式变化，询问用户是否只计算公式
+        // 如果只有公式变化，直接计算公式并返回
         if (changeType == ReportDataModel::UQ_FORMULA_ONLY) {
-            QMessageBox msgBox(this);
-            msgBox.setWindowTitle("检测到新增公式");
-            msgBox.setText("检测到新增公式，但数据未变化。");
-            msgBox.setInformativeText(
-                "请选择操作：\n"
-                "• 是：仅计算新增公式，不重新查询数据\n"
-                "• 否：重新选择时间范围并查询数据\n\n"
-                "建议：如果只是添加了计算列，选择\"是\"即可。"
-            );
-            QPushButton* yesButton = msgBox.addButton("是", QMessageBox::YesRole);
-            QPushButton* noButton = msgBox.addButton("否", QMessageBox::NoRole);
-            msgBox.setDefaultButton(yesButton);
+            qDebug() << "[刷新数据] 检测到仅公式变化，直接计算..."; // 添加日志
+
+            // 直接计算公式
+            m_dataModel->recalculateAllFormulas();
+
+            // 提示用户完成
+            QMessageBox msgBoxDone(QMessageBox::Information, "完成", "公式计算完成！", QMessageBox::NoButton, this);
+            msgBoxDone.setStandardButtons(QMessageBox::Ok);
+            msgBoxDone.setButtonText(QMessageBox::Ok, "确定");
+            msgBoxDone.exec();
+
+            return; // <--- 计算完直接返回，不再弹出时间选择框
+        }
+
+        // ===== 无变化时询问是否重新查询 =====
+        // 这个逻辑是合理的，用户可能确实想用相同配置重新查一次
+        if (changeType == ReportDataModel::UQ_NO_CHANGE && m_dataModel->hasUnifiedQueryData()) {
+            QMessageBox msgBox(QMessageBox::Question, "确认刷新",
+                "当前配置和数据无变化。\n\n是否仍要重新查询数据？",
+                QMessageBox::NoButton, this);
+            QPushButton* yesBtn = msgBox.addButton("是", QMessageBox::YesRole);
+            QPushButton* noBtn = msgBox.addButton("否", QMessageBox::NoRole);
+            msgBox.setDefaultButton(noBtn);
 
             msgBox.exec();
-
-            QMessageBox::StandardButton reply;
-            if (msgBox.clickedButton() == yesButton) {
-                reply = QMessageBox::Yes;
+            if (msgBox.clickedButton() == noBtn) {
+                qDebug() << "[刷新数据] 无变化，用户取消重新查询";
+                return; // 用户取消，直接返回
             }
-            else {
-                reply = QMessageBox::No;
-            }
-
-            if (reply == QMessageBox::Yes) {
-                // 只计算公式
-                m_dataModel->recalculateAllFormulas();
-                QMessageBox msgBoxDone(QMessageBox::Information, "完成", "公式计算完成！", QMessageBox::NoButton, this);
-                msgBoxDone.setStandardButtons(QMessageBox::Ok);
-                msgBoxDone.setButtonText(QMessageBox::Ok, "确定");
-                msgBoxDone.exec();
-                return;
-            }
-            // 否则继续弹出时间选择框
+            qDebug() << "[刷新数据] 无变化，用户确认重新查询";
+            // 如果用户选择“是”，则继续执行下面的时间选择逻辑
         }
+
 
         // ===== 弹出时间选择窗口 =====
         if (!m_timeSettingsDialog) {
@@ -1025,6 +1026,15 @@ void MainWindow::onRefreshData()
 
         // ===== 启动异步查询 =====
         m_dataModel->refreshReportData(nullptr);
+
+        // ===== 修正 1：禁用工具栏 =====
+        m_toolBar->setEnabled(false);
+        // =============================
+
+        // ===== 修正 2：关联 rejected 信号 (X 按钮) =====
+        connect(m_unifiedQueryProgress, &QProgressDialog::rejected,
+            this, &MainWindow::onUnifiedQueryCanceled);
+        // ===================================
 
         return;  // 立即返回，不等待
     }

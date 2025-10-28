@@ -430,6 +430,20 @@ void ReportDataModel::restoreUnifiedQuery()
         return;
     }
 
+    QMessageBox confirmMsgBox(QMessageBox::Question, "确认还原",
+        "是否要将报表还原到配置文件的初始状态？\n\n所有已查询的数据和自定义公式都将被清除。",
+        QMessageBox::NoButton, nullptr);
+    QPushButton* yesBtnConfirm = confirmMsgBox.addButton("是", QMessageBox::YesRole);
+    QPushButton* noBtnConfirm = confirmMsgBox.addButton("否", QMessageBox::NoRole);
+    confirmMsgBox.setDefaultButton(noBtnConfirm); // 默认为 "否"
+
+    confirmMsgBox.exec();
+
+    if (confirmMsgBox.clickedButton() == noBtnConfirm) {
+        qDebug() << "用户取消还原";
+        return; // 用户取消，函数返回
+    }
+
     // ===== 检查是否有用户添加的公式 =====
     bool hasUserFormulas = false;
     int formulaCount = 0;
@@ -1969,7 +1983,7 @@ QVariant ReportDataModel::getUnifiedQueryCellData(const QModelIndex& index, int 
         // 【配置阶段】显示真实 cells（2列）
         if (role == Qt::DisplayRole || role == Qt::EditRole) {
             const CellData* cell = getCell(row, col);
-            return cell ? cell->value : QVariant();
+            return cell ? cell->displayValue : QVariant();
         }
 
         if (role == Qt::BackgroundRole) {
@@ -1991,7 +2005,7 @@ QVariant ReportDataModel::getUnifiedQueryCellData(const QModelIndex& index, int 
             if (role == Qt::DisplayRole) {
                 if (cell->hasFormula && cell->formulaCalculated) {
                     // 显示公式计算结果
-                    return cell->value;
+                    return cell->displayValue;
                 }
                 else if (cell->hasFormula && !cell->formulaCalculated) {
                     // 显示公式文本
@@ -1999,7 +2013,7 @@ QVariant ReportDataModel::getUnifiedQueryCellData(const QModelIndex& index, int 
                 }
                 else {
                     // 显示普通值
-                    return cell->value;
+                    return cell->displayValue;
                 }
             }
 
@@ -2007,7 +2021,7 @@ QVariant ReportDataModel::getUnifiedQueryCellData(const QModelIndex& index, int 
                 if (cell->hasFormula) {
                     return cell->formula;  // 编辑时显示公式
                 }
-                return cell->value;
+                return cell->displayValue;
             }
 
             if (role == Qt::BackgroundRole) {
@@ -2119,17 +2133,22 @@ void ReportDataModel::updateEditability()
 
 ReportDataModel::UnifiedQueryChangeType ReportDataModel::detectUnifiedQueryChanges()
 {
-    if (!hasUnifiedQueryData()) {
-        // 还没查询过数据，肯定需要查询
+    // 如果还没有查询过数据，或者上次快照是空的，则需要重新查询
+    if (!hasUnifiedQueryData() || m_lastSnapshot.isEmpty()) {
+        qDebug() << "[统一查询变化检测] 尚未查询或快照为空，需要查询";
         return UQ_NEED_REQUERY;
     }
 
+    // 标志位，记录是否检测到变化
+    bool configChanged = false;
+    bool formulasChanged = false;
+
+    // ===== 1. 检测配置变化 (前两列) =====
     UnifiedQueryParser* queryParser = dynamic_cast<UnifiedQueryParser*>(m_parser);
     if (queryParser) {
-        const HistoryReportConfig& currentConfig = queryParser->getConfig();
-
-        // 重新扫描当前配置
-        HistoryReportConfig newConfig;
+        // 获取上次快照保存的配置（可以通过Parser获取，或者直接对比前两列内容）
+        // 这里我们重新扫描当前配置，与Parser中存储的（上次刷新时的）配置对比
+        HistoryReportConfig newConfig; // 用于存储当前界面上的配置
         for (int row = 0; row < m_maxRow; ++row) {
             QModelIndex nameIndex = index(row, 0);
             QModelIndex rtuIndex = index(row, 1);
@@ -2137,58 +2156,76 @@ ReportDataModel::UnifiedQueryChangeType ReportDataModel::detectUnifiedQueryChang
             QString displayName = data(nameIndex, Qt::DisplayRole).toString().trimmed();
             QString rtuId = data(rtuIndex, Qt::DisplayRole).toString().trimmed();
 
+            // 遇到第一个完全空行就停止读取配置
             if (displayName.isEmpty() && rtuId.isEmpty()) {
+                // 如果当前行号小于上次配置的行数，说明有删除
+                if (row < queryParser->getConfig().columns.size()) {
+                    configChanged = true;
+                }
                 break;
             }
 
-            if (displayName.isEmpty() || rtuId.isEmpty()) {
-                continue;
+            // 检查是否超出了上次配置的行数（新增）
+            if (row >= queryParser->getConfig().columns.size()) {
+                configChanged = true;
+                break; // 检测到新增即可停止比较
             }
 
-            ReportColumnConfig colConfig;
-            colConfig.displayName = displayName;
-            colConfig.rtuId = rtuId;
-            colConfig.sourceRow = row;
-            newConfig.columns.append(colConfig);
-        }
-
-        // 对比配置
-        if (newConfig.columns.size() != currentConfig.columns.size()) {
-            qDebug() << "[统一查询] 配置行数变化："
-                << currentConfig.columns.size() << "->" << newConfig.columns.size();
-            return UQ_NEED_REQUERY;
-        }
-
-        for (int i = 0; i < newConfig.columns.size(); ++i) {
-            if (newConfig.columns[i].displayName != currentConfig.columns[i].displayName ||
-                newConfig.columns[i].rtuId != currentConfig.columns[i].rtuId) {
-                qDebug() << "[统一查询] 配置内容变化：行" << i;
-                return UQ_NEED_REQUERY;
+            // 检查内容是否变化（修改）
+            const ReportColumnConfig& oldColConfig = queryParser->getConfig().columns[row];
+            if (displayName != oldColConfig.displayName || rtuId != oldColConfig.rtuId) {
+                configChanged = true;
+                break; // 检测到修改即可停止比较
             }
         }
+        // 检查最终读取的行数是否与上次配置一致（处理末尾删除的情况）
+        if (!configChanged && newConfig.columns.size() != queryParser->getConfig().columns.size()) {
+            configChanged = true;
+        }
+
+        if (configChanged) {
+            qDebug() << "[统一查询变化检测] 检测到配置 (前两列) 发生变化";
+        }
+    }
+    else {
+        qWarning() << "[统一查询变化检测] Parser 类型错误或为空";
+        return UQ_NEED_REQUERY; // Parser 不对，强制重新查询
     }
 
 
-    // 检查是否有新增公式
-    bool hasNewFormulas = false;
-    for (int row = 0; row < m_maxRow; ++row) {
-        for (int col = m_dataColumnCount + 1; col < m_maxCol; ++col) {
-            const CellData* cell = getCell(row, col);
-            if (cell && cell->hasFormula && !cell->formulaCalculated) {
-                hasNewFormulas = true;
-                break;
-            }
+    // ===== 2. 检测公式变化 (数据列之后) =====
+    QSet<QPoint> currentFormulas = getCurrentFormulas(); // 获取当前所有公式的位置
+    // 与上次快照对比
+    if (currentFormulas != m_lastSnapshot.formulaCells) {
+        formulasChanged = true;
+        qDebug() << "[统一查询变化检测] 检测到公式集合发生变化";
+        // 可以在这里打印更详细的差异信息（哪些新增，哪些删除）
+        QSet<QPoint> addedFormulas = currentFormulas - m_lastSnapshot.formulaCells;
+        QSet<QPoint> removedFormulas = m_lastSnapshot.formulaCells - currentFormulas;
+        if (!addedFormulas.isEmpty()) {
+            qDebug() << "  新增公式数量:" << addedFormulas.size();
         }
-        if (hasNewFormulas) break;
+        if (!removedFormulas.isEmpty()) {
+            qDebug() << "  删除公式数量:" << removedFormulas.size();
+        }
     }
 
-    if (hasNewFormulas) {
-        qDebug() << "[统一查询] 检测到新增公式";
+    // ===== 3. 判断最终变化类型 =====
+    if (configChanged) {
+        // 只要配置变了，就必须重新查询
+        qDebug() << "[统一查询变化检测] 结果: UQ_NEED_REQUERY (配置变化)";
+        return UQ_NEED_REQUERY;
+    }
+    else if (formulasChanged) {
+        // 配置没变，但公式变了
+        qDebug() << "[统一查询变化检测] 结果: UQ_FORMULA_ONLY (仅公式变化)";
         return UQ_FORMULA_ONLY;
     }
-
-    qDebug() << "[统一查询] 无变化";
-    return UQ_NO_CHANGE;
+    else {
+        // 配置和公式都没变
+        qDebug() << "[统一查询变化检测] 结果: UQ_NO_CHANGE (无变化)";
+        return UQ_NO_CHANGE;
+    }
 }
 
 void ReportDataModel::markAllCellsClean()
