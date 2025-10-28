@@ -2146,41 +2146,43 @@ ReportDataModel::UnifiedQueryChangeType ReportDataModel::detectUnifiedQueryChang
     // ===== 1. 检测配置变化 (前两列) =====
     UnifiedQueryParser* queryParser = dynamic_cast<UnifiedQueryParser*>(m_parser);
     if (queryParser) {
-        // 获取上次快照保存的配置（可以通过Parser获取，或者直接对比前两列内容）
-        // 这里我们重新扫描当前配置，与Parser中存储的（上次刷新时的）配置对比
-        HistoryReportConfig newConfig; // 用于存储当前界面上的配置
+        const HistoryReportConfig& lastConfig = queryParser->getConfig();
+        int lastConfigRowCount = lastConfig.columns.size();
+        int currentConfigRowCount = 0; // 用来统计当前实际配置行数
+
+        // 先扫描一遍当前配置，确定实际行数
         for (int row = 0; row < m_maxRow; ++row) {
             QModelIndex nameIndex = index(row, 0);
             QModelIndex rtuIndex = index(row, 1);
-
             QString displayName = data(nameIndex, Qt::DisplayRole).toString().trimmed();
             QString rtuId = data(rtuIndex, Qt::DisplayRole).toString().trimmed();
-
-            // 遇到第一个完全空行就停止读取配置
             if (displayName.isEmpty() && rtuId.isEmpty()) {
-                // 如果当前行号小于上次配置的行数，说明有删除
-                if (row < queryParser->getConfig().columns.size()) {
-                    configChanged = true;
-                }
-                break;
+                break; // 遇到空行停止计数
             }
-
-            // 检查是否超出了上次配置的行数（新增）
-            if (row >= queryParser->getConfig().columns.size()) {
-                configChanged = true;
-                break; // 检测到新增即可停止比较
-            }
-
-            // 检查内容是否变化（修改）
-            const ReportColumnConfig& oldColConfig = queryParser->getConfig().columns[row];
-            if (displayName != oldColConfig.displayName || rtuId != oldColConfig.rtuId) {
-                configChanged = true;
-                break; // 检测到修改即可停止比较
-            }
+            currentConfigRowCount++;
         }
-        // 检查最终读取的行数是否与上次配置一致（处理末尾删除的情况）
-        if (!configChanged && newConfig.columns.size() != queryParser->getConfig().columns.size()) {
+        qDebug() << "[统一查询变化检测] 当前配置行数:" << currentConfigRowCount << ", 上次配置行数:" << lastConfigRowCount;
+
+        // 首先比较行数，如果不一致，则肯定发生变化
+        if (currentConfigRowCount != lastConfigRowCount) {
             configChanged = true;
+            qDebug() << "[统一查询变化检测] 检测到配置行数变化";
+        }
+        else {
+            // 行数相同，逐行比较内容
+            for (int row = 0; row < currentConfigRowCount; ++row) { // 只需比较到实际行数
+                QModelIndex nameIndex = index(row, 0);
+                QModelIndex rtuIndex = index(row, 1);
+                QString displayName = data(nameIndex, Qt::DisplayRole).toString().trimmed();
+                QString rtuId = data(rtuIndex, Qt::DisplayRole).toString().trimmed();
+
+                const ReportColumnConfig& oldColConfig = lastConfig.columns[row];
+                if (displayName != oldColConfig.displayName || rtuId != oldColConfig.rtuId) {
+                    configChanged = true;
+                    qDebug() << "[统一查询变化检测] 检测到配置内容修改，行号:" << row;
+                    break; // 检测到修改即可停止比较
+                }
+            }
         }
 
         if (configChanged) {

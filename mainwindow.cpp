@@ -858,11 +858,14 @@ void MainWindow::onUnifiedQueryCompleted(bool success, QString message)
 			m_dataModel->resetModelSize(totalRows, totalCols);
         }
 
-        // ===== 补充：计算公式 =====
+        // ===== 计算公式 =====
         m_dataModel->recalculateAllFormulas();
         m_dataModel->notifyDataChanged();
 
-        // ===== 补充：显示详细成功消息 =====
+        // ===== 在查询成功后保存快照 =====
+        m_dataModel->saveRefreshSnapshot();
+
+        // ===== 显示详细成功消息 =====
         QMessageBox msgBox(QMessageBox::Information, "查询成功",
             QString("数据查询完成！\n\n"
                 "时间点：%1 个\n"
@@ -913,7 +916,9 @@ void MainWindow::onRefreshData()
             msgBoxDone.setButtonText(QMessageBox::Ok, "确定");
             msgBoxDone.exec();
 
-            return; // <--- 计算完直接返回，不再弹出时间选择框
+            m_dataModel->saveRefreshSnapshot();
+
+            return;
         }
 
         // ===== 无变化时询问是否重新查询 =====
