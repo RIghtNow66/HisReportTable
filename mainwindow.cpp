@@ -900,29 +900,26 @@ void MainWindow::onRefreshData()
     if (m_dataModel->isUnifiedQueryMode()) {
         qDebug() << "进入统一查询刷新流程";
 
-        // ===== 检测变化类型 =====
+        // ===== 提前检测变化类型 =====
         ReportDataModel::UnifiedQueryChangeType changeType = m_dataModel->detectUnifiedQueryChanges();
 
-        // 如果只有公式变化，直接计算公式并返回
+        // ===== 分支1：仅公式变化 =====
         if (changeType == ReportDataModel::UQ_FORMULA_ONLY) {
-            qDebug() << "[刷新数据] 检测到仅公式变化，直接计算..."; // 添加日志
-
-            // 直接计算公式
+            qDebug() << "[刷新数据] 检测到仅公式变化，直接计算...";
             m_dataModel->recalculateAllFormulas();
 
-            // 提示用户完成
-            QMessageBox msgBoxDone(QMessageBox::Information, "完成", "公式计算完成！", QMessageBox::NoButton, this);
+            QMessageBox msgBoxDone(QMessageBox::Information, "完成",
+                "公式计算完成！",
+                QMessageBox::NoButton, this);
             msgBoxDone.setStandardButtons(QMessageBox::Ok);
             msgBoxDone.setButtonText(QMessageBox::Ok, "确定");
             msgBoxDone.exec();
 
             m_dataModel->saveRefreshSnapshot();
-
             return;
         }
 
-        // ===== 无变化时询问是否重新查询 =====
-        // 这个逻辑是合理的，用户可能确实想用相同配置重新查一次
+        // ===== 分支2：无变化 =====
         if (changeType == ReportDataModel::UQ_NO_CHANGE && m_dataModel->hasUnifiedQueryData()) {
             QMessageBox msgBox(QMessageBox::Question, "确认刷新",
                 "当前配置和数据无变化。\n\n是否仍要重新查询数据？",
@@ -934,10 +931,9 @@ void MainWindow::onRefreshData()
             msgBox.exec();
             if (msgBox.clickedButton() == noBtn) {
                 qDebug() << "[刷新数据] 无变化，用户取消重新查询";
-                return; // 用户取消，直接返回
+                return;
             }
             qDebug() << "[刷新数据] 无变化，用户确认重新查询";
-            // 如果用户选择“是”，则继续执行下面的时间选择逻辑
         }
 
 
