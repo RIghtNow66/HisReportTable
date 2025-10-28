@@ -40,7 +40,7 @@ contains(QMAKE_TARGET.arch, x86_64) {
 # ============ 源文件 ============
 SOURCES += \
     main.cpp \
-    mainwindow.cpp \
+    ReportTableWidget.cpp \
     reportdatamodel.cpp \
     formulaengine.cpp \
     excelhandler.cpp \
@@ -54,7 +54,7 @@ SOURCES += \
 
 # ============ 头文件 ============
 HEADERS += \
-    mainwindow.h \
+    ReportTableWidget.h \
     reportdatamodel.h \
     formulaengine.h \
     excelhandler.h \
