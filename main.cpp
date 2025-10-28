@@ -1,11 +1,11 @@
 ﻿#include <QApplication>
-#include "mainwindow.h"
+#include "ReportTableWidget.h"
 
 int main(int argc, char* argv[]){
     QApplication app(argc, argv);
 
-    MainWindow window;
-    window.show();
+    ReportTableWidget w;
+    w.show();
 
     return app.exec();
 }

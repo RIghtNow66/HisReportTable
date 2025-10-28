@@ -1,7 +1,6 @@
-﻿#ifndef MAINWINDOW_H
-#define MAINWINDOW_H
+﻿#ifndef REPORTTABLEWIDGET_H
+#define REPORTTABLEWIDGET_H
 
-#include <QMainWindow>
 #include <QToolBar>
 #include <QLineEdit>
 #include <QLabel>
@@ -16,6 +15,7 @@
 #include <QRadioButton>
 #include <QSpinBox>
 #include <QProgressDialog>
+#include <QWidget>
             
 
 #include "TimeSettingsDialog.h"
@@ -24,13 +24,13 @@
 
 class ReportDataModel;
 
-class MainWindow : public QMainWindow
+class ReportTableWidget : public QWidget
 {
     Q_OBJECT
 
 public:
-    MainWindow(QWidget* parent = nullptr);
-    ~MainWindow();
+    ReportTableWidget(QWidget* parent = nullptr);
+    ~ReportTableWidget();
 
 private slots:
     // 文件操作
@@ -65,7 +65,6 @@ private slots:
 
 private:
     // UI组件
-    QWidget* m_centralWidget;
     QVBoxLayout* m_mainLayout;
 
     // 工具栏
@@ -152,4 +151,4 @@ private:
 
 };
 
-#endif // MAINWINDOW_H
+#endif // REPORTTABLEWIDGET_H
